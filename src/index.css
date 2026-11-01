@@ -1,0 +1,72 @@
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; }
+body { font-family: system-ui, 'Segoe UI', sans-serif; background: #dbe4ee; color: #0f172a; overflow: hidden; }
+
+/* Nhãn + bong bóng chat trên đầu agent */
+.tag { display: flex; flex-direction: column; align-items: center; gap: 6px; white-space: nowrap; user-select: none; }
+.name { color: #fff; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.bubble {
+  position: relative; background: #fff; font-size: 13px; padding: 6px 10px; border-radius: 10px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.15); width: max-content; max-width: 240px; white-space: normal; text-align: center;
+  animation: pop 0.2s ease-out;
+}
+.bubble::after {
+  content: ''; position: absolute; left: 50%; bottom: -6px; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: #fff; border-bottom: 0;
+}
+.bubble.chat { background: #eef2ff; border: 2px solid #6366f1; max-width: 300px; }
+.bubble.chat::after { border-top-color: #6366f1; }
+@keyframes pop { from { transform: scale(0.6); opacity: 0; } }
+
+/* HUD */
+.hud { position: fixed; inset: 0; pointer-events: none; padding: 12px; }
+.hud > * { pointer-events: auto; }
+.panel { background: rgb(255 255 255 / 0.88); backdrop-filter: blur(6px); border-radius: 12px; box-shadow: 0 2px 12px rgb(0 0 0 / 0.08); }
+.panel h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #475569; }
+
+.top { position: absolute; top: 12px; left: 12px; display: flex; align-items: center; gap: 16px; padding: 8px 14px; }
+.top h1 { margin: 0; font-size: 18px; }
+.speed { display: flex; gap: 4px; }
+.speed button { border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+.speed button.on { background: #0f172a; color: #fff; border-color: #0f172a; }
+
+.ai { display: flex; align-items: center; gap: 6px; border: 1px solid #cbd5e1; background: #fff; border-radius: 999px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+.ai i { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
+.ai.online i { background: #22c55e; }
+.ai.unknown i { background: #eab308; }
+.ai.offline i { background: #ef4444; }
+
+.kanban { position: absolute; top: 12px; right: 12px; display: flex; gap: 8px; padding: 10px; max-width: calc(100% - 440px); overflow-x: auto; }
+.col { width: 130px; }
+.col h3 span { background: #e2e8f0; border-radius: 999px; padding: 0 6px; margin-left: 2px; }
+.card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 7px; font-size: 12px; margin-bottom: 4px; }
+.area { font-size: 10px; font-weight: 700; color: #fff; border-radius: 4px; padding: 0 4px; margin-right: 4px; }
+.area.BE { background: #22c55e; }
+.area.FE { background: #14b8a6; }
+.area.FULLSTACK { background: linear-gradient(90deg, #22c55e, #14b8a6); }
+.area.TEAM { background: #64748b; }
+.card em.meeting { color: #6366f1; }
+.empty { font-size: 11px; color: #64748b; max-width: 130px; }
+.card em { font-style: normal; color: #dc2626; }
+
+.log { position: absolute; left: 12px; bottom: 12px; width: 340px; padding: 10px 12px; font-size: 12px; }
+.line { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chatbox { display: flex; gap: 4px; margin-top: 8px; }
+.chatbox select, .chatbox input, .chatbox button { font: inherit; font-size: 12px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 4px 6px; background: #fff; }
+.chatbox input { flex: 1; min-width: 0; }
+.chatbox button { background: #0f172a; color: #fff; border-color: #0f172a; cursor: pointer; }
+.chatbox button:disabled { opacity: 0.5; }
+.chat-error { color: #dc2626; margin-top: 4px; }
+.line time { color: #94a3b8; margin-right: 6px; font-variant-numeric: tabular-nums; }
+
+.agents { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 8px; }
+.agent { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 112px; padding: 7px 10px; border: 2px solid; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.agent.sel { background: #fff; transform: translateY(-4px); }
+.agent small { color: #64748b; font-size: 11px; }
+.agent .state { font-size: 11px; background: #f1f5f9; border-radius: 6px; padding: 1px 6px; }
+
+@media (max-width: 900px) {
+  .kanban { display: none; }
+  .log { width: auto; right: 12px; bottom: 120px; }
+  .agents { left: 12px; overflow-x: auto; }
+}

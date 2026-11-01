@@ -1,0 +1,191 @@
+import { AGENTS, HOBBIES, type Role } from '../data/agents'
+import { useStore } from '../store'
+
+const RETRY_AFTER_MS = 30_000
+const TIMEOUT_MS = 95_000 // một lần `claude -p` mất vài giây, đôi khi lâu hơn
+let lastFailure = 0
+
+export interface Line {
+  text: string
+  title: string
+  /** Chỉ có khi PM tạo task mới: 'BE' | 'FE' | 'FULLSTACK' */
+  area?: string
+}
+
+/** Nói với một đồng đội (file riêng của cặp), cả team (team.md) hoặc sếp (Sep-<Role>.md) */
+export type Channel = Role | 'team' | 'boss'
+
+/** Việc sếp giao: 'team' = việc chung, hoặc giao đích danh một agent */
+export interface Assignment {
+  id: number
+  target: Role | 'team'
+  text: string
+}
+
+const SESSION = Math.random().toString(36).slice(2) + Date.now().toString(36)
+
+/** Báo server việc đã xong, để không bị giao lại khi tải lại trang */
+export function markAssignmentDone(id: number) {
+  void fetch('/api/assignments/done', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  }).catch(() => {})
+}
+
+/** Nhận việc sếp giao từ server (qua office/inbox.md hoặc ô giao việc) */
+export function startAssignmentPolling(onAssignment: (a: Assignment) => void) {
+  const poll = async () => {
+    try {
+      const res = await fetch('/api/assignments/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: SESSION }),
+      })
+      if (res.ok) {
+        const { assignments } = (await res.json()) as { assignments: Assignment[] }
+        for (const a of assignments) {
+          useStore.getState().pushLog('Sếp', `giao việc ${a.target === 'team' ? 'chung' : `cho ${a.target}`}: ${a.text}`)
+          onAssignment(a)
+        }
+      }
+    } catch {
+      // server chưa chạy: thử lại ở lượt sau
+    }
+    setTimeout(poll, 1500)
+  }
+  void poll()
+}
+
+/**
+ * Xin Claude (qua server gọi Claude CLI) một câu thoại cho `role` trong `situation`.
+ * Trả về `fallback` khi AI tắt, server chưa chạy hoặc lỗi.
+ */
+export async function aiLine(role: Role, situation: string, fallback: Line, channel?: Channel): Promise<Line> {
+  const { aiEnabled, setAi } = useStore.getState()
+  if (!aiEnabled || Date.now() - lastFailure < RETRY_AFTER_MS) return fallback
+
+  try {
+    const res = await fetch('/api/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, situation, channel }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const line = (await res.json()) as Line
+    if (!line.text) throw new Error('empty')
+    setAi({ aiStatus: 'online' })
+    return { text: line.text, title: line.title || fallback.title, area: line.area || fallback.area }
+  } catch {
+    lastFailure = Date.now()
+    setAi({ aiStatus: 'offline' })
+    return fallback
+  }
+}
+
+/** Gọi khi người dùng bật lại AI để thử kết nối ngay */
+export function resetAiBackoff() {
+  lastFailure = 0
+}
+
+const STAGE_LABEL = { todo: 'chưa bắt đầu', meeting: 'đang họp', dev: 'đang làm', review: 'đang review', test: 'đang test', done: 'xong' }
+
+/** Mô tả ngắn agent đang làm gì, để server đưa vào prompt (nhất là khi trả lời sếp) */
+function statusOf(role: Role): string {
+  const { agents, tasks } = useStore.getState()
+  const a = agents[role]
+  const task = tasks.find((t) => t.id === a.taskId)
+  const def = AGENTS.find((d) => d.id === role)!
+  if (task) {
+    const kind = task.assignee === 'team' ? `việc chung${task.area ? `, ${task.area}` : ''}` : 'việc sếp giao riêng'
+    return `Đang giữ task "${task.title}" (${kind}, ${STAGE_LABEL[task.stage]}).`
+  }
+  const waiting = tasks.filter((t) => t.stage === 'todo').length
+  if (a.state === 'hobby') {
+    return `Không có việc nào (sếp chưa giao${waiting ? `, ${waiting} việc đang chờ đến lượt` : ''}), ngồi ${HOBBIES[def.hobby].label} ở khoang của mình.`
+  }
+  if (a.state === 'idle' || a.state === 'talk') return 'Đang ở ngoài khoang (họp hoặc trao đổi với đồng đội).'
+  if (a.state === 'walk') return 'Đang đi lại trong phòng.'
+  return 'Đang ngồi ở khoang.'
+}
+
+/** Gửi trạng thái cả phòng lên server mỗi vài giây */
+export function startStatusSync() {
+  const sync = async () => {
+    const statuses = Object.fromEntries(AGENTS.map((a) => [a.id, statusOf(a.id)]))
+    try {
+      await fetch('/api/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ statuses }),
+      })
+    } catch {
+      // server chưa chạy: bỏ qua
+    }
+    setTimeout(sync, 3000)
+  }
+  void sync()
+}
+
+/** Gửi tin nhắn của sếp; server ghi vào office/inbox.md rồi xử lý như tin viết tay */
+export async function sendToInbox(text: string): Promise<string | null> {
+  try {
+    const res = await fetch('/api/inbox', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+    if (res.ok) return null
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    return body.error ?? `Lỗi ${res.status}`
+  } catch {
+    return 'Không kết nối được server (npm run server)'
+  }
+}
+
+interface OfficeEvent {
+  id: number
+  type: 'user' | 'thinking' | 'reply' | 'error'
+  role: Role
+  text: string
+}
+
+const chatTimers: Partial<Record<Role, ReturnType<typeof setTimeout>>> = {}
+
+function showChat(role: Role, text: string, ms: number | null) {
+  const { setAgent } = useStore.getState()
+  clearTimeout(chatTimers[role])
+  setAgent(role, { chat: text })
+  if (ms !== null) chatTimers[role] = setTimeout(() => setAgent(role, { chat: null }), ms)
+}
+
+/** Lấy tin nhắn sếp ↔ agent từ server (kể cả tin viết thẳng vào inbox.md) và hiện lên phòng */
+export function startEventPolling() {
+  let since = -1 // lần đầu chỉ lấy mốc, bỏ qua sự kiện cũ
+  const poll = async () => {
+    try {
+      const res = await fetch(`/api/events?since=${Math.max(since, 0)}`)
+      if (res.ok) {
+        const { events, last } = (await res.json()) as { events: OfficeEvent[]; last: number }
+        if (since >= 0) {
+          const { pushLog } = useStore.getState()
+          for (const e of events) {
+            if (e.type === 'user') pushLog('Sếp', e.text.startsWith('@all') ? e.text : `@${e.role} ${e.text}`)
+            if (e.type === 'thinking') showChat(e.role, '💭 đang soạn trả lời sếp...', null)
+            if (e.type === 'reply') {
+              pushLog(e.role, `↩ ${e.text}`)
+              showChat(e.role, e.text, 6000 + e.text.length * 60)
+            }
+            if (e.type === 'error') showChat(e.role, `⚠️ ${e.text}`, 4000)
+          }
+        }
+        since = last
+      }
+    } catch {
+      // server chưa chạy: thử lại ở lượt sau
+    }
+    setTimeout(poll, 1500)
+  }
+  void poll()
+}
