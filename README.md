@@ -2,10 +2,10 @@
 
 Phòng IT 3D với 5 agent người que, mỗi người một khoang ngồi: PM, Dev Backend (BE), Dev Frontend (FE), QA, Tester.
 
-**Agent chỉ làm khi bạn giao việc** (ô "Giao việc" trên giao diện, hoặc dòng `giao ...` trong `office/inbox.md`):
+**Agent chỉ làm khi bạn giao việc**: bật **📋 Giao việc** trong cửa sổ 💬 Chat (xem [Chat kiểu Teams](#chat-kiểu-teams)), hoặc viết dòng `giao ...` vào `office/inbox.md`:
 
-- `giao @team <việc>`: việc chung. Cả team ra bàn họp, PM đặt tên task và chọn BE / FE / FULLSTACK, mỗi người nêu phần của mình, PM chốt phân công. Sau đó dev làm (fullstack: BE làm API rồi bàn giao FE) → QA review → Tester test → PM báo cáo bạn. Bug được giao cho đúng người phụ trách phần bị lỗi.
-- `giao @FE <việc>` (hoặc @PM, @BE, @QA, @Tester): việc riêng. Chỉ người đó nhận việc, làm, rồi báo cáo bạn.
+- Giao trong **Cả team** (hoặc `giao @team <việc>`): việc chung. Cả team ra bàn họp, PM đặt tên task và chọn BE / FE / FULLSTACK, mỗi người nêu phần của mình, PM chốt phân công. Sau đó dev làm (fullstack: BE làm API rồi bàn giao FE) → QA review → Tester test → PM báo cáo bạn. Bug được giao cho đúng người phụ trách phần bị lỗi.
+- Giao trong chat riêng với một người (hoặc `giao @FE <việc>`, @PM, @BE, @QA, @Tester): việc riêng. Chỉ người đó nhận việc, làm, rồi báo cáo bạn.
 
 Việc làm lần lượt theo thứ tự giao. Đang có việc chung thì ai chưa tới lượt ngồi chờ ở khoang, không đi tán gẫu. Không có việc nào thì cả team ngồi chơi.
 
@@ -67,8 +67,10 @@ Mỗi agent chỉ nhận tin của những kênh mình tham gia (cặp riêng c�
 
 ## Chat kiểu Teams
 
-Nút **💬 Chat** trên thanh trên cùng mở cửa sổ chat (số đỏ là tin chưa xem):
+Nút **💬 Chat** trên thanh trên cùng mở cửa sổ chat (số đỏ là tin chưa xem). Đây là chỗ nhắn tin và giao việc duy nhất trên giao diện:
 
+- **Cả team**: kênh chung (`office/chat/team.md`), có cả các câu họp và standup của team. Nhắn ở đây thì cả 5 người lần lượt trả lời, hoặc chỉ người được @gọi tên.
+- **📋 Giao việc**: nút bên trái ô nhập. Bật lên rồi gửi: trong **Cả team** là việc chung (cả team họp rồi làm), trong chat riêng là việc riêng của người đó. Tin giao việc có nền vàng và nhãn "📋 Giao việc"; câu nhận việc và báo cáo của agent hiện trong chat riêng (việc chung do PM báo cáo).
 - **Trò chuyện riêng**: nhắn với từng người. Dùng chung file `office/chat/Sep-<Role>.md` với tin nhắn qua `inbox.md`, nên lịch sử cũ vẫn hiện. Bảng chi tiết agent có nút "💬 Nhắn" mở thẳng cuộc chat này.
 - **Nhóm**: "＋ Nhóm mới", đặt tên, chọn bất kỳ agent nào. Nút "👥 Thành viên" để đổi tên, thêm hoặc bớt người. Thêm hoặc bớt người thì nhóm có dòng thông báo, người mới vào đọc được các tin gần nhất.
   - Không gọi tên ai thì cả nhóm lần lượt trả lời, người sau đọc được câu người trước.
@@ -93,7 +95,7 @@ Phần CLI, model và kênh chat lấy từ `GET /api/agent?role=BE`, tự làm 
 
 Agent không giữ task nào thì ngồi chơi theo sở thích: Lan đọc sách 📖, Minh chơi game 🎮, Khoa nghe nhạc 🎧, Hà xem phim 🍿, Tú xoay rubik 🧩. Thỉnh thoảng một người rảnh sang khoang người rảnh khác tán gẫu (3 câu, ghi vào file riêng của hai người). Lẩm bẩm về sở thích chỉ là câu có sẵn, không gọi Claude.
 
-Ô chat ở góc dưới bên trái giao diện cũng ghi vào `office/inbox.md`, nên tin nhắn từ giao diện hay viết tay vào file đều đi cùng một đường.
+Vẫn có thể nhắn và giao việc bằng cách viết tay vào `office/inbox.md` (`@FE ...`, `giao @team ...`, `reset @BE`); tin nhắn đó hiện trong cửa sổ chat như tin gửi từ giao diện.
 
 Kết quả đạt / có lỗi trong quy trình vẫn do mô phỏng tung xúc xắc để giữ nhịp; Claude diễn đạt cho khớp kết quả.
 

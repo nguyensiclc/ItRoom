@@ -1,7 +1,6 @@
 import { AGENTS, agentById, HOBBIES } from '../data/agents'
 import { useStore, type AnimState, type Stage, type Task } from '../store'
-import { useState } from 'react'
-import { resetAiBackoff, sendToInbox } from '../sim/ai'
+import { resetAiBackoff } from '../sim/ai'
 import { AgentDetail } from './AgentDetail'
 import { ChatLauncher, TeamsChat } from './TeamsChat'
 
@@ -43,7 +42,6 @@ const AI_HINT = {
 export function Hud() {
   const agents = useStore((s) => s.agents)
   const tasks = useStore((s) => s.tasks)
-  const log = useStore((s) => s.log)
   const selected = useStore((s) => s.selected)
   const speed = useStore((s) => s.speed)
   const select = useStore((s) => s.select)
@@ -51,13 +49,6 @@ export function Hud() {
   const aiEnabled = useStore((s) => s.aiEnabled)
   const aiStatus = useStore((s) => s.aiStatus)
   const setAi = useStore((s) => s.setAi)
-  const [draft, setDraft] = useState('')
-  const [mode, setMode] = useState<'task' | 'chat'>('task')
-  const [chatTo, setChatTo] = useState('team')
-  const targets = mode === 'task' ? ['team', ...AGENTS.map((a) => a.id)] : [...AGENTS.map((a) => a.id), 'all']
-  const target = targets.includes(chatTo) ? chatTo : targets[0]
-  const [sending, setSending] = useState(false)
-  const [chatError, setChatError] = useState<string | null>(null)
 
   return (
     <div className="hud">
@@ -100,52 +91,10 @@ export function Hud() {
                   {t.bugs > 0 && <em> 🐞{t.bugs}</em>}
                 </div>
               ))}
-              {st.ids[0] === 'todo' && tasks.length === 0 && <div className="empty">Chưa có việc. Giao việc ở ô bên dưới, cả team đang ngồi chơi.</div>}
+              {st.ids[0] === 'todo' && tasks.length === 0 && <div className="empty">Chưa có việc. Giao việc qua 💬 Chat, cả team đang ngồi chơi.</div>}
             </div>
           )
         })}
-      </section>
-
-      <section className="panel log">
-        <h3>Hoạt động</h3>
-        {log.slice(0, 8).map((l) => (
-          <div key={l.id} className="line" title={l.text}>
-            <time>{l.time}</time>
-            <b style={{ color: l.who === 'Sếp' ? '#0f172a' : agentById(l.who).color }}>{l.who}</b> {l.text}
-          </div>
-        ))}
-        <form
-          className="chatbox"
-          onSubmit={async (e) => {
-            e.preventDefault()
-            const text = draft.trim()
-            if (!text) return
-            // Gõ thẳng cú pháp ("@FE ..." / "giao @team ...") thì gửi nguyên văn
-            const message = /^(giao\s+)?@\w+\s/i.test(text) ? text : mode === 'task' ? `giao @${target} ${text}` : `@${target} ${text}`
-            setSending(true)
-            const err = await sendToInbox(message)
-            setSending(false)
-            setChatError(err)
-            if (!err) setDraft('')
-          }}
-        >
-          <select value={mode} onChange={(e) => setMode(e.target.value as 'task' | 'chat')} aria-label="Loại">
-            <option value="task">Giao việc</option>
-            <option value="chat">Nhắn</option>
-          </select>
-          <select value={target} onChange={(e) => setChatTo(e.target.value)} aria-label="Gửi tới">
-            {targets.map((id) => (
-              <option key={id} value={id}>@{id}</option>
-            ))}
-          </select>
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={mode === 'task' ? (target === 'team' ? 'Việc chung: cả team họp rồi làm' : `Việc riêng cho ${target}`) : 'Nhắn tin'}
-          />
-          <button disabled={sending}>Gửi</button>
-        </form>
-        {chatError && <div className="chat-error">{chatError}</div>}
       </section>
 
       {selected && <AgentDetail key={selected} role={selected} />}

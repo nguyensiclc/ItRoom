@@ -78,6 +78,13 @@ function Avatar({ role, size = 32 }: { role: Role | 'boss'; size?: number }) {
 
 function ChatAvatar({ chat, size = 34 }: { chat: ChatSummary; size?: number }) {
   if (chat.kind === 'dm') return <Avatar role={chat.members[0]} size={size} />
+  if (chat.kind === 'team') {
+    return (
+      <span className="t-avatar t-team-avatar" style={{ width: size, height: size, fontSize: size * 0.48 }}>
+        👥
+      </span>
+    )
+  }
   const shown = chat.members.slice(0, 2)
   return (
     <span className="t-group-avatar" style={{ width: size, height: size }}>
@@ -90,6 +97,9 @@ function ChatAvatar({ chat, size = 34 }: { chat: ChatSummary; size?: number }) {
 }
 
 const nameOf = (r: Role) => agentById(r).name
+
+/** Tin giao việc server ghi kèm tiền tố "(giao việc) " / "(giao việc chung) " */
+const TASK_PREFIX = /^\(giao việc(?: chung)?\) /
 
 function typingText(roles: Role[]) {
   if (!roles.length) return null
@@ -173,6 +183,8 @@ function Conversation({ chat }: { chat: ChatSummary }) {
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
+  const [asTask, setAsTask] = useState(false)
+  const canAssign = chat.kind !== 'group'
   const openChat = useStore((s) => s.openChat)
   const markSeen = useChats((s) => s.markSeen)
   const listRef = useRef<HTMLDivElement>(null)
@@ -208,12 +220,18 @@ function Conversation({ chat }: { chat: ChatSummary }) {
   const send = async () => {
     const text = draft.trim()
     if (!text) return
+    const task = canAssign && asTask
     setDraft('')
+    setAsTask(false)
     // hiện ngay tin của sếp, lần hỏi server sau sẽ thay bằng bản thật
-    setMessages((m) => [...(m ?? []), { time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }), from: 'boss', text }])
-    const res = await sendChatMessage(chat.id, text)
+    const shown = task ? `(giao việc${chat.kind === 'team' ? ' chung' : ''}) ${text}` : text
+    setMessages((m) => [...(m ?? []), { time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }), from: 'boss', text: shown }])
+    const res = await sendChatMessage(chat.id, text, task)
     setError(res.error ?? null)
-    if (res.error) setDraft(text)
+    if (res.error) {
+      setDraft(text)
+      setAsTask(task)
+    }
   }
 
   const mention = (r: Role) => {
@@ -224,7 +242,9 @@ function Conversation({ chat }: { chat: ChatSummary }) {
   if (editing) return <GroupForm initial={chat} onDone={() => setEditing(false)} />
 
   const sub =
-    chat.kind === 'dm' ? `${agentById(chat.members[0]).title} · @${chat.members[0]}` : `${chat.members.length + 1} người: Bạn, ${chat.members.map(nameOf).join(', ')}`
+    chat.kind === 'team'
+      ? `Cả 5 người · giao việc ở đây thì cả team họp rồi cùng làm`
+      : chat.kind === 'dm' ? `${agentById(chat.members[0]).title} · @${chat.members[0]}` : `${chat.members.length + 1} người: Bạn, ${chat.members.map(nameOf).join(', ')}`
 
   return (
     <>
@@ -261,7 +281,7 @@ function Conversation({ chat }: { chat: ChatSummary }) {
         {messages === null && <p className="t-empty">Đang tải...</p>}
         {messages?.length === 0 && (
           <p className="t-empty">
-            {chat.kind === 'dm' ? `Bắt đầu trò chuyện với ${chat.name}.` : 'Nhóm chưa có tin nhắn. Gõ @tên để gọi riêng một người, không thì cả nhóm cùng trả lời.'}
+            {chat.kind === 'dm' ? `Bắt đầu trò chuyện với ${chat.name}. Bật 📋 Giao việc để giao việc riêng.` : chat.kind === 'team' ? 'Kênh chung của cả team. Bật 📋 Giao việc để giao việc chung.' : 'Nhóm chưa có tin nhắn. Gõ @tên để gọi riêng một người, không thì cả nhóm cùng trả lời.'}
           </p>
         )}
         {messages?.map((m, i) => {
@@ -272,7 +292,10 @@ function Conversation({ chat }: { chat: ChatSummary }) {
             return (
               <div key={i} className={`t-msg mine ${grouped ? 'cont' : ''}`}>
                 {!grouped && <time>{m.time}</time>}
-                <div className="t-bubble">{m.text}</div>
+                <div className={`t-bubble ${TASK_PREFIX.test(m.text) ? 'task' : ''}`}>
+                  {TASK_PREFIX.test(m.text) && <span className="t-task-tag">📋 Giao việc</span>}
+                  {m.text.replace(TASK_PREFIX, '')}
+                </div>
               </div>
             )
           }
@@ -310,7 +333,7 @@ function Conversation({ chat }: { chat: ChatSummary }) {
           void send()
         }}
       >
-        {chat.kind === 'group' && (
+        {chat.kind !== 'dm' && !asTask && (
           <div className="t-mentions">
             Gọi riêng:
             {chat.members.map((r) => (
@@ -321,7 +344,20 @@ function Conversation({ chat }: { chat: ChatSummary }) {
           </div>
         )}
         {error && <p className="t-error">{error}</p>}
-        <div className="t-input">
+        <div className={`t-input ${asTask ? 'task' : ''}`}>
+          {canAssign && (
+            <button
+              type="button"
+              className={`t-task-toggle ${asTask ? 'on' : ''}`}
+              onClick={() => {
+                setAsTask((v) => !v)
+                inputRef.current?.focus()
+              }}
+              title={chat.kind === 'team' ? 'Giao việc chung: cả team họp rồi làm' : `Giao việc riêng cho ${chat.name}`}
+            >
+              📋 Giao việc
+            </button>
+          )}
           <textarea
             ref={inputRef}
             rows={1}
@@ -334,7 +370,15 @@ function Conversation({ chat }: { chat: ChatSummary }) {
                 void send()
               }
             }}
-            placeholder={chat.kind === 'dm' ? `Nhắn cho ${chat.name}` : `Nhắn trong nhóm ${chat.name}`}
+            placeholder={
+              asTask
+                ? chat.kind === 'team'
+                  ? 'Việc chung: cả team họp, PM phân công rồi làm'
+                  : `Việc riêng cho ${chat.name}`
+                : chat.kind === 'dm'
+                  ? `Nhắn cho ${chat.name}`
+                  : `Nhắn trong ${chat.kind === 'team' ? 'kênh cả team' : `nhóm ${chat.name}`}`
+            }
           />
           <button className="primary" disabled={!draft.trim()} aria-label="Gửi">
             ➤
@@ -356,12 +400,12 @@ export function TeamsChat() {
   if (current === undefined) return null
 
   const active = chats?.find((c) => c.id === current)
-  const groupChats = chats?.filter((c) => c.kind === 'group') ?? []
+  const groupChats = chats?.filter((c) => c.kind !== 'dm') ?? []
   const dms = chats?.filter((c) => c.kind === 'dm') ?? []
 
   const row = (c: ChatSummary) => {
     const unread = unreadOf(c, seen)
-    const preview = typingText(c.typing) ?? (c.last ? `${c.last.from === 'boss' ? 'Bạn: ' : c.kind === 'group' && c.last.from ? `${nameOf(c.last.from)}: ` : ''}${c.last.text}` : 'Chưa có tin nhắn')
+    const preview = typingText(c.typing) ?? (c.last ? `${c.last.from === 'boss' ? 'Bạn: ' : c.kind !== 'dm' && c.last.from ? `${nameOf(c.last.from)}: ` : ''}${c.last.text.replace(TASK_PREFIX, '📋 ')}` : 'Chưa có tin nhắn')
     return (
       <button
         key={c.id}

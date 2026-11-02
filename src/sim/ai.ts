@@ -131,22 +131,6 @@ export function startStatusSync() {
   void sync()
 }
 
-/** Gửi tin nhắn của sếp; server ghi vào office/inbox.md rồi xử lý như tin viết tay */
-export async function sendToInbox(text: string): Promise<string | null> {
-  try {
-    const res = await fetch('/api/inbox', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    })
-    if (res.ok) return null
-    const body = (await res.json().catch(() => ({}))) as { error?: string }
-    return body.error ?? `Lỗi ${res.status}`
-  } catch {
-    return 'Không kết nối được server (npm run server)'
-  }
-}
-
 interface OfficeEvent {
   id: number
   type: 'user' | 'thinking' | 'reply' | 'error'
@@ -229,9 +213,9 @@ export interface ChatMessage {
 }
 
 export interface ChatSummary {
-  /** `dm:BE` hoặc `group:<id>` */
+  /** `team`, `dm:BE` hoặc `group:<id>` */
   id: string
-  kind: 'dm' | 'group'
+  kind: 'team' | 'dm' | 'group'
   name: string
   members: Role[]
   count: number
@@ -251,7 +235,8 @@ async function api<T>(url: string, body?: unknown): Promise<{ data?: T; error?: 
 
 export const fetchChats = () => api<{ chats: ChatSummary[] }>('/api/chats')
 export const fetchMessages = (id: string) => api<{ messages: ChatMessage[]; typing: Role[] }>(`/api/chats/messages?id=${encodeURIComponent(id)}`)
-export const sendChatMessage = (id: string, text: string) => api<{ ok: true }>('/api/chats/send', { id, text })
+/** `task`: giao việc (Cả team = việc chung, chat riêng = việc riêng) thay vì nhắn tin */
+export const sendChatMessage = (id: string, text: string, task = false) => api<{ ok: true }>('/api/chats/send', { id, text, task })
 export const createGroup = (name: string, members: Role[]) => api<{ id: string }>('/api/groups', { name, members })
 export const updateGroup = (id: string, patch: { name?: string; members?: Role[] }) => api<{ id: string }>('/api/groups/update', { id, ...patch })
 export const deleteGroup = (id: string) => api<{ ok: true }>('/api/groups/delete', { id })

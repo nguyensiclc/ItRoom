@@ -671,14 +671,20 @@ function parseMessage(line: string): ChatMessage {
 }
 
 const chatFile = (chat: string) =>
-  chat.startsWith('group:') ? groupFile(chat.slice(6)) : path.join(CHANNEL_DIR, `Sep-${chat.slice(3)}.md`)
+  chat === 'team'
+    ? channelFile('PM', 'team').file
+    : chat.startsWith('group:')
+      ? groupFile(chat.slice(6))
+      : path.join(CHANNEL_DIR, `Sep-${chat.slice(3)}.md`)
+const chatExists = (chat: string) => chat === 'team' || (chat.startsWith('dm:') ? !!toRole(chat.slice(3)) : !!groupById(chat.slice(6)))
 
 function chatList() {
-  const item = (id: string, kind: 'dm' | 'group', name: string, members: Role[]) => {
+  const item = (id: string, kind: 'team' | 'dm' | 'group', name: string, members: Role[]) => {
     const all = messages(chatFile(id))
     return { id, kind, name, members, count: all.length, last: all.length ? parseMessage(all.at(-1)!) : null, typing: [...(typing.get(id) ?? [])] }
   }
   return [
+    item('team', 'team', 'Cả team', [...ROLES]),
     ...groups.map((g) => item(`group:${g.id}`, 'group', g.name, g.members)),
     ...ROLES.map((r) => item(`dm:${r}`, 'dm', NAMES[r], [r])),
   ]
@@ -697,7 +703,14 @@ function mentioned(text: string, members: Role[]) {
   return members.filter((r) => tags.includes(r.toLowerCase()) || tags.includes(NAMES[r].toLowerCase()))
 }
 
-function sendChat(chat: string, text: string): string | null {
+function sendChat(chat: string, text: string, task = false): string | null {
+  if (task) {
+    // giao việc: "Cả team" = việc chung (họp rồi làm), chat riêng = việc riêng của người đó
+    const target = chat === 'team' ? 'team' : chat.startsWith('dm:') ? toRole(chat.slice(3)) : undefined
+    if (!target) return 'Chỉ giao việc được trong "Cả team" hoặc chat riêng'
+    assign(target, text)
+    return null
+  }
   if (chat.startsWith('dm:')) {
     const role = toRole(chat.slice(3))
     if (!role) return 'Không có agent này'
@@ -714,27 +727,32 @@ function sendChat(chat: string, text: string): string | null {
     })
     return null
   }
-  const g = groupById(chat.slice(6))
-  if (!g) return 'Nhóm không còn tồn tại'
-  if (g.members.length === 0) return 'Nhóm chưa có thành viên'
-  appendLog(`Sếp → nhóm ${g.name}`, text)
-  appendChannel(g.members[0], chat as Channel, 'Sếp', text)
-  emit('user', g.members[0], text, g.name)
-  const called = mentioned(text, g.members)
-  const responders = called.length ? called : g.members
+  // "Cả team" (team.md) hoặc nhóm sếp tự tạo
+  const g = chat === 'team' ? undefined : groupById(chat.slice(6))
+  if (chat !== 'team' && !g) return 'Nhóm không còn tồn tại'
+  const name = g?.name ?? 'Cả team'
+  const members = g?.members ?? [...ROLES]
+  const channel: Channel = g ? (chat as Channel) : 'team'
+  const title = g ? groupTitle(g) : 'kênh chung của cả team'
+  if (members.length === 0) return 'Nhóm chưa có thành viên'
+  appendLog(`Sếp → ${g ? `nhóm ${name}` : 'cả team'}`, text)
+  appendChannel(members[0], channel, 'Sếp', text)
+  emit('user', members[0], text, name)
+  const called = mentioned(text, members)
+  const responders = called.length ? called : members
   inChat(chat, async () => {
     // lần lượt để người sau đọc được câu người trước trong nhóm
     for (const role of responders) {
-      if (!groupById(g.id)?.members.includes(role)) continue // bị bớt khỏi nhóm trong lúc chờ
+      if (g && !groupById(g.id)?.members.includes(role)) continue // bị bớt khỏi nhóm trong lúc chờ
       setTyping(chat, role, true)
       emit('thinking', role)
       try {
         const situation =
-          `Sếp vừa nhắn trong ${groupTitle(g)}: "${text}". ` +
+          `Sếp vừa nhắn trong ${title}: "${text}". ` +
           (called.length ? 'Sếp gọi tên bạn. ' : '') +
           'Trả lời trong nhóm; nếu đồng đội đã nói rồi thì đừng lặp lại, có thể đáp lại ý của họ.'
-        const { text: reply } = await speak(role, situation, chat as Channel, 'boss')
-        emit('reply', role, reply, g.name)
+        const { text: reply } = await speak(role, situation, channel, 'boss')
+        emit('reply', role, reply, name)
       } catch (e) {
         console.error((e as Error).message)
         emit('error', role, 'Không gọi được CLI')
@@ -947,8 +965,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/chats/messages') {
     const chat = url.searchParams.get('id') ?? ''
-    const ok = chat.startsWith('dm:') ? !!toRole(chat.slice(3)) : !!groupById(chat.slice(6))
-    if (!ok) return send(res, 404, { error: 'Không có cuộc chat này' })
+    if (!chatExists(chat)) return send(res, 404, { error: 'Không có cuộc chat này' })
     return send(res, 200, { messages: messages(chatFile(chat)).slice(-200).map(parseMessage), typing: [...(typing.get(chat) ?? [])] })
   }
 
@@ -957,7 +974,7 @@ const server = http.createServer(async (req, res) => {
     const chat = typeof body?.id === 'string' ? body.id : ''
     const text = typeof body?.text === 'string' ? body.text.replace(/\s+/g, ' ').trim() : ''
     if (!text || text.length > 500) return send(res, 400, { error: 'Tin nhắn trống hoặc dài quá 500 ký tự' })
-    const err = sendChat(chat, text)
+    const err = sendChat(chat, text, body?.task === true)
     return err ? send(res, 400, { error: err }) : send(res, 200, { ok: true })
   }
 
