@@ -68,6 +68,9 @@ body { font-family: system-ui, 'Segoe UI', sans-serif; background: #dbe4ee; colo
 .detail .models b { color: #0f172a; font-weight: 600; }
 .detail .muted { color: #64748b; margin: 0; }
 .detail .link { border: none; background: none; padding: 0; margin-top: 8px; color: #6366f1; cursor: pointer; font: inherit; font-size: 12px; }
+.detail .skills { list-style: none; margin: 0; padding: 0; }
+.detail .skills li { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; border-bottom: 1px solid #f1f5f9; }
+.detail .skills b { letter-spacing: 1px; font-weight: 400; white-space: nowrap; }
 .detail .persona { white-space: pre-wrap; font: inherit; font-size: 11px; background: #f8fafc; border-radius: 6px; padding: 6px 8px; margin: 4px 0 0; }
 
 .detail .dm { border: 1px solid #c7d2fe; background: #eef2ff; color: #4f46e5; border-radius: 6px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 12px; }

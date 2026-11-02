@@ -56,7 +56,9 @@ Agent có dòng `cli: antigravity` ở đầu file persona thì nói bằng Anti
 |---|---|
 | `agents/_rules.md` | Luật chung cho mọi agent (cách nói, độ dài, định dạng) |
 | `agents/_models.md` | Model Claude cho từng loại việc (tán gẫu dùng haiku...) |
-| `agents/PM.md`, `BE.md`, `FE.md`, `QA.md`, `Tester.md` | Tính cách từng agent. Sửa file là có hiệu lực từ câu tiếp theo |
+| `agents/PM.md`, `BE.md`, `FE.md`, `QA.md`, `Tester.md` | Tính cách, sở thích, quan hệ đồng nghiệp, vai trò (phần đầu có tên, chức danh, `cli:`). Sửa file là có hiệu lực từ câu tiếp theo |
+| `agents/PM_skills.md`, `BE_skills.md`... | Chuyên môn: bảng kỹ năng có mức sao ★, công cụ / tech stack, giới hạn. Server nối sau file tính cách khi gửi cho CLI; bảng chi tiết agent hiện mục "Chuyên môn" |
+| `agents/_project.md` | Dự án thật: thư mục, branch chính, model để code |
 | `office/inbox.md` | Hộp thư của bạn: thêm dòng `@FE nội dung` (hoặc `@all ...`) rồi lưu |
 | `office/chat/BE-QA.md`, `FE-Tester.md`... | Trò chuyện riêng giữa từng cặp agent (tạo khi hai người nói chuyện lần đầu) |
 | `office/chat/team.md` | Kênh chung: thông báo task mới, standup |
@@ -64,6 +66,19 @@ Agent có dòng `cli: antigravity` ở đầu file persona thì nói bằng Anti
 | `office/chat.md` | Nhật ký tổng để bạn theo dõi cả phòng (agent không đọc) |
 
 Mỗi agent chỉ nhận tin của những kênh mình tham gia (cặp riêng của mình, kênh với sếp, kênh team), nên chuyện riêng giữa hai người không lộ sang người khác.
+
+## Dự án thật
+
+Cấu hình ở `agents/_project.md` (mặc định `path: D:Projectsmy-app`). Khi có `path` và server đang chạy, các bước công việc là việc thật trên thư mục đó; server tự tạo thư mục và repo git (commit đầu trên `main`) nếu chưa có.
+
+- **Dev (BE, FE)** viết code thật, chạy build/test. **QA** đọc diff thật của branch rồi kết luận đạt / cần sửa. **Tester** chạy test thật (hoặc viết test rồi chạy) và báo bug kèm phần gây lỗi. Việc riêng thì người được giao làm thật theo vai trò.
+- Không còn tung xúc xắc: review fail / có bug là do QA, Tester kết luận. Góp ý và mô tả bug được chuyển nguyên cho dev sửa.
+- Mỗi việc một branch `task/<mã>`. Server commit sau mỗi bước có thay đổi (tác giả là agent làm bước đó), merge vào `main` khi việc chung qua test hoặc việc riêng xong. Không bao giờ push.
+- Quyền: dev và tester sửa file và chạy lệnh trong danh sách cho phép (npm, npx, node, pnpm, yarn, python, pip, pytest, tsc, git status/diff/log/show, ls, cat, mkdir); QA chỉ đọc; PM đọc và viết tài liệu. Lệnh khác bị từ chối.
+- Việc thật luôn chạy bằng Claude Code CLI, kể cả Lan và Tú (agy không giới hạn được từng công cụ); trò chuyện của họ vẫn dùng agy. Mỗi agent có session làm việc riêng trong thư mục dự án.
+- Mỗi bước có thể mất vài phút (tối đa 25 phút), trong lúc đó agent hiện bong bóng "⌨️ Đang code thật...", "🔍 Đang review diff..."... Bước nào lỗi (CLI lỗi, quá giờ) thì bước đó quay về mô phỏng.
+- Nhật ký từng bước (branch, commit, đã merge chưa, số giây) ghi trong `office/chat.md`.
+- Biến môi trường `PROJECT_DIR` thay cho `path`. Xoá `path` để quay về mô phỏng.
 
 ## Chat kiểu Teams
 
@@ -96,7 +111,7 @@ Agent không giữ task nào thì ngồi chơi theo sở thích: Lan đọc sác
 
 Vẫn có thể nhắn và giao việc bằng cách viết tay vào `office/inbox.md` (`@FE ...`, `giao @team ...`, `reset @BE`); tin nhắn đó hiện trong cửa sổ chat như tin gửi từ giao diện.
 
-Kết quả đạt / có lỗi trong quy trình vẫn do mô phỏng tung xúc xắc để giữ nhịp; Claude diễn đạt cho khớp kết quả.
+Khi chưa cấu hình dự án thật, kết quả đạt / có lỗi trong quy trình do mô phỏng tung xúc xắc để giữ nhịp; Claude diễn đạt cho khớp kết quả.
 
 ## Tuỳ chọn (biến môi trường cho `npm run server`)
 

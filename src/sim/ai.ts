@@ -185,6 +185,8 @@ export interface AgentDetail {
   title?: string
   hobby?: string
   persona: string
+  /** Nội dung agents/<Role>_skills.md (bảng kỹ năng + mức sao) */
+  skills: string
   engine: 'claude' | 'agy'
   models: Record<Kind, string>
   session: { id: string; started: string; turns: number; open: string } | null
@@ -239,3 +241,62 @@ export const sendChatMessage = (id: string, text: string, task = false) => api<{
 export const createGroup = (name: string, members: Role[]) => api<{ id: string }>('/api/groups', { name, members })
 export const updateGroup = (id: string, patch: { name?: string; members?: Role[] }) => api<{ id: string }>('/api/groups/update', { id, ...patch })
 export const deleteGroup = (id: string) => api<{ ok: true }>('/api/groups/delete', { id })
+
+// ---------- làm việc thật trên thư mục dự án ----------
+
+let project: { dir: string; base: string } | null = null
+
+/** Hỏi server dự án thật đang cấu hình (agents/_project.md); null = mô phỏng */
+export function startProjectPolling() {
+  const poll = async () => {
+    try {
+      const res = await fetch('/api/project')
+      const p = res.ok ? ((await res.json()) as { enabled: boolean; dir?: string; base?: string }) : null
+      project = p?.enabled && p.dir ? { dir: p.dir, base: p.base ?? 'main' } : null
+    } catch {
+      project = null
+    }
+    setTimeout(poll, 10_000)
+  }
+  void poll()
+}
+
+/** Đang làm việc thật: có dự án, server chạy và đang bật Claude AI */
+export const realMode = () => !!project && useStore.getState().aiEnabled
+
+export interface WorkResult {
+  summary: string
+  verdict: 'done' | 'pass' | 'fail'
+  area: '' | 'BE' | 'FE'
+  details: string
+  branch: string
+  commit: string
+  merged: boolean
+  seconds: number
+}
+
+export interface WorkRequest {
+  role: Role
+  step: 'code' | 'fix' | 'review' | 'test' | 'personal'
+  branch: string
+  title: string
+  request: string
+  notes?: string
+  merge?: boolean
+}
+
+/** Một bước việc thật (có thể mất vài phút); null khi lỗi, để quy trình quay về mô phỏng cho bước đó */
+export async function realWork(w: WorkRequest): Promise<WorkResult | null> {
+  try {
+    const res = await fetch('/api/work', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(w),
+      signal: AbortSignal.timeout(30 * 60_000),
+    })
+    if (!res.ok) return null
+    return (await res.json()) as WorkResult
+  } catch {
+    return null
+  }
+}

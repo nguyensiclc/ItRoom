@@ -19,6 +19,8 @@ export interface Task {
   area: Area | null
   stage: Stage
   bugs: number
+  /** Branch git của việc này trong dự án thật (task/<mã>), mã không trùng giữa các lần tải trang */
+  branch: string
 }
 
 export interface AgentRuntime {
@@ -80,7 +82,7 @@ export const useStore = create<Store>((set) => ({
   addTask: (request, assignee) => {
     const id = nextTaskId++
     const title = request.length > 40 ? `${request.slice(0, 38)}…` : request // tên tạm, agent đặt lại sau
-    set((s) => ({ tasks: [...s.tasks, { id, title, request, assignee, area: null, stage: 'todo', bugs: 0 }] }))
+    set((s) => ({ tasks: [...s.tasks, { id, title, request, assignee, area: null, stage: 'todo', bugs: 0, branch: `task/${Date.now().toString(36)}-${id}` }] }))
     return id
   },
   updateTask: (id, patch) => set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) })),

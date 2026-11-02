@@ -16,6 +16,15 @@ const STAGE_LABEL = { todo: 'chưa bắt đầu', meeting: 'đang họp', dev: '
 
 const KIND_LABEL = { smalltalk: 'Tán gẫu', work: 'Làm việc', plan: 'Họp', boss: 'Với sếp' }
 
+/** Các dòng của bảng kỹ năng trong <Role>_skills.md: | Kỹ năng | ★★★★☆ | Ghi chú | */
+function skillRows(md: string) {
+  return md
+    .split(/\r?\n/)
+    .map((l) => l.split('|').map((c) => c.trim()))
+    .filter((c) => c.length >= 4 && /^[★☆]+$/.test(c[2]))
+    .map((c) => ({ name: c[1], stars: c[2], note: c[3] ?? '' }))
+}
+
 export function AgentDetail({ role }: { role: Role }) {
   const def = agentById(role)
   const runtime = useStore((s) => s.agents[role])
@@ -118,6 +127,20 @@ export function AgentDetail({ role }: { role: Role }) {
               </span>
             ))}
           </div>
+
+          {skillRows(detail.skills).length > 0 && (
+            <>
+              <h3>Chuyên môn</h3>
+              <ul className="skills">
+                {skillRows(detail.skills).map((s) => (
+                  <li key={s.name} title={s.note}>
+                    <span>{s.name}</span>
+                    <b style={{ color: def.color }}>{s.stars}</b>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
 
           <button className="link" onClick={() => setShowPersona((v) => !v)}>
             {showPersona ? 'Ẩn' : 'Xem'} tính cách (agents/{role}.md)

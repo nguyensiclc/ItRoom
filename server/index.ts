@@ -98,8 +98,16 @@ function modelFor(kind: Kind, engine: Engine): string | undefined {
   return value && /^[a-z][a-z0-9._\-]*$/i.test(value) ? value : undefined
 }
 
+/** Chuyên môn của agent (agents/<Role>_skills.md); trống nếu chưa có file */
+function skillsOf(role: Role) {
+  const file = path.join(AGENTS_DIR, `${role}_skills.md`)
+  return fs.existsSync(file) ? readMd(file) : ''
+}
+
+/** Luật chung + tính cách (agents/<Role>.md) + chuyên môn (agents/<Role>_skills.md) */
 function systemPrompt(role: Role) {
-  return `${readMd(path.join(AGENTS_DIR, '_rules.md'))}\n\n${readMd(path.join(AGENTS_DIR, `${role}.md`))}`
+  const skills = skillsOf(role)
+  return `${readMd(path.join(AGENTS_DIR, '_rules.md'))}\n\n${readMd(path.join(AGENTS_DIR, `${role}.md`))}${skills ? `\n\n${skills}` : ''}`
 }
 
 function ensureChatFile() {
@@ -177,6 +185,8 @@ interface AgentSession {
   turns: number
   /** Số tin đã giao cho agent trong từng file kênh (theo tên file) */
   seen: Record<string, number>
+  /** Session làm việc thật trong thư mục dự án (Claude CLI lưu session theo thư mục chạy) */
+  work?: { id: string; project: string; turns: number }
 }
 
 let sessions: Partial<Record<Role, AgentSession>> = {}
@@ -586,8 +596,9 @@ function speak(role: Role, situation: string, channel?: Channel, kind: Kind = 'w
     try {
       line = await withSlot(() => runEngine(role, s, prompt, model))
     } catch (e) {
-      if (s.turns === 0) throw e
-      // Session không mở lại được (bị xoá, hỏng...): bắt đầu session mới thay vì im lặng
+      // Chỉ tạo session mới khi CLI báo không tìm thấy session (bị xoá, hỏng...). Lỗi khác như hết quota,
+      // mất mạng thì giữ nguyên session, để agent không mất trí nhớ chỉ vì một lần gọi lỗi
+      if (s.turns === 0 || !/no conversation found|not found/i.test((e as Error).message)) throw e
       console.error(`Session của ${role} lỗi, tạo session mới: ${(e as Error).message}`)
       resetSession(role)
       s = sessionOf(role, engine)
@@ -612,6 +623,228 @@ function speak(role: Role, situation: string, channel?: Channel, kind: Kind = 'w
     appendLog(`${who(role)}${to}`, `${line.text} _(${kind} · ${modelLabel} · ${line.via} · ${seconds}s)_`)
     console.log(`[${role}] ${modelLabel} · ${line.via} · ${seconds}s`)
     return { title: line.title, area: line.area, text: line.text, model: modelLabel, kind, via: line.via, seconds: Number(seconds) }
+  })
+}
+
+// ---------- làm việc thật trên thư mục dự án (agents/_project.md) ----------
+
+const PROJECT_FILE = path.join(AGENTS_DIR, '_project.md')
+const WORK_TIMEOUT_MS = 25 * 60_000
+
+/** Thư mục dự án và branch chính; null = chưa cấu hình (chạy mô phỏng) */
+function projectConfig() {
+  const dir = process.env.PROJECT_DIR ?? frontmatter(PROJECT_FILE, 'path')
+  if (!dir) return null
+  const base = frontmatter(PROJECT_FILE, 'base_branch') ?? 'main'
+  return { dir: path.resolve(dir), base: /^[\w./-]+$/.test(base) ? base : 'main' }
+}
+
+function git(cwd: string, args: string[]): Promise<{ code: number; out: string }> {
+  return new Promise((resolve) => {
+    const child = spawn('git', ['-c', 'user.name=IT Room', '-c', 'user.email=itroom@local', ...args], { cwd, windowsHide: true })
+    let out = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (d) => (out += d))
+    child.stderr.on('data', (d) => (out += d))
+    child.on('error', (e) => resolve({ code: -1, out: e.message }))
+    child.on('close', (code) => resolve({ code: code ?? -1, out: out.trim() }))
+  })
+}
+
+/** Tạo thư mục dự án và repo git (commit đầu tiên trên branch chính) nếu chưa có */
+async function ensureProject() {
+  const p = projectConfig()
+  if (!p) return null
+  fs.mkdirSync(p.dir, { recursive: true })
+  if (!fs.existsSync(path.join(p.dir, '.git'))) {
+    await git(p.dir, ['init', '-b', p.base])
+    if (!fs.existsSync(path.join(p.dir, '.gitignore'))) fs.writeFileSync(path.join(p.dir, '.gitignore'), 'node_modules/\ndist/\n.env\n')
+    if (!fs.existsSync(path.join(p.dir, 'README.md'))) fs.writeFileSync(path.join(p.dir, 'README.md'), `# ${path.basename(p.dir)}\n\nDự án do team IT Room làm.\n`)
+    await git(p.dir, ['add', '-A'])
+    await git(p.dir, ['commit', '-m', 'Khởi tạo dự án'])
+    console.log(`[dự án] tạo repo mới ở ${p.dir}`)
+  }
+  return p
+}
+
+// Chỉ có một thư mục làm việc: mỗi lúc một bước việc thật
+let projectChain: Promise<unknown> = Promise.resolve()
+function withProject<T>(fn: () => Promise<T>): Promise<T> {
+  const next = projectChain.then(fn, fn)
+  projectChain = next.catch(() => {})
+  return next
+}
+
+const RUN_TOOLS = ['npm', 'npx', 'node', 'pnpm', 'yarn', 'python', 'py', 'pip', 'pytest', 'tsc', 'ls', 'cat', 'mkdir'].map((c) => `Bash(${c}:*)`)
+const GIT_READ = ['git status', 'git diff', 'git log', 'git show'].map((c) => `Bash(${c}:*)`)
+const READ_TOOLS = ['Read', 'Glob', 'Grep', ...GIT_READ]
+const WRITE_TOOLS = ['Edit', 'MultiEdit', 'Write']
+
+/** Công cụ theo vai trò: dev và tester sửa file + chạy lệnh, QA chỉ đọc, PM đọc và viết tài liệu */
+function toolsFor(role: Role) {
+  if (role === 'BE' || role === 'FE' || role === 'Tester') return [...READ_TOOLS, ...WRITE_TOOLS, ...RUN_TOOLS]
+  if (role === 'PM') return [...READ_TOOLS, ...WRITE_TOOLS]
+  return READ_TOOLS
+}
+
+const WORK_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    verdict: { type: 'string', enum: ['done', 'pass', 'fail'] },
+    area: { type: 'string', enum: ['', 'BE', 'FE'] },
+    details: { type: 'string' },
+  },
+  required: ['summary', 'verdict', 'area', 'details'],
+  additionalProperties: false,
+})
+
+interface WorkResult {
+  summary: string
+  verdict: 'done' | 'pass' | 'fail'
+  area: '' | 'BE' | 'FE'
+  details: string
+}
+
+const WORK_RULES = `
+# Làm việc thật
+
+Bạn đang làm việc thật trong thư mục dự án (thư mục hiện tại). Server đã chuyển sẵn sang đúng branch của việc này.
+- Không commit, không đổi branch, không merge, không push: server tự làm.
+- Chỉ đụng vào file trong thư mục dự án.
+- Lệnh shell chỉ được dùng: npm, npx, node, pnpm, yarn, python, pip, pytest, tsc, ls, cat, mkdir, git status/diff/log/show. Lệnh khác sẽ bị từ chối.
+- Không chạy lệnh chờ mãi (dev server, watch); chạy build/test một lần rồi dừng.
+- Trả lời cuối cùng theo đúng schema: summary là 1-2 câu tiếng Việt kể ngắn đã làm gì (để nói với đồng đội), details là chi tiết (file đã đổi, cách chạy, lỗi cụ thể nếu có).`
+
+function runClaudeWork(role: Role, cwd: string, prompt: string, sessionId: string, resume: boolean, model?: string): Promise<WorkResult> {
+  const args = [
+    '-p',
+    '--output-format', 'json',
+    '--json-schema', WORK_SCHEMA,
+    '--system-prompt', `${systemPrompt(role)}\n${WORK_RULES}`,
+    '--allowedTools', ...toolsFor(role),
+    resume ? '--resume' : '--session-id', sessionId,
+  ]
+  if (model) args.push('--model', model)
+  return new Promise((resolve, reject) => {
+    const child = spawn(CLAUDE_BIN, args, { cwd, windowsHide: true, env: childEnv })
+    let out = ''
+    let err = ''
+    const timer = setTimeout(() => child.kill(), WORK_TIMEOUT_MS)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (d) => (out += d))
+    child.stderr.on('data', (d) => (err += d))
+    child.on('error', (e) => {
+      clearTimeout(timer)
+      reject(new Error(`Không chạy được "${CLAUDE_BIN}": ${e.message}`))
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      try {
+        const r = JSON.parse(out) as { is_error?: boolean; result?: string; structured_output?: Partial<WorkResult> }
+        const so = r.structured_output
+        if (r.is_error || !so || typeof so.summary !== 'string') throw new Error(r.result ?? 'không có structured_output')
+        resolve({
+          summary: so.summary.trim().slice(0, 400),
+          verdict: so.verdict === 'pass' || so.verdict === 'fail' ? so.verdict : 'done',
+          area: so.area === 'BE' || so.area === 'FE' ? so.area : '',
+          details: (so.details ?? '').trim().slice(0, 4000),
+        })
+      } catch (e) {
+        reject(new Error(`claude (làm việc) thoát mã ${code}: ${(e as Error).message} ${err.slice(0, 300)}`))
+      }
+    })
+    child.stdin.end(prompt)
+  })
+}
+
+type WorkStep = 'code' | 'fix' | 'review' | 'test' | 'personal'
+
+interface WorkRequest {
+  role: Role
+  step: WorkStep
+  branch: string
+  title: string
+  request: string
+  /** Phần việc (backend/frontend) hoặc góp ý review / mô tả bug cần sửa */
+  notes: string
+  /** Việc chung qua test / việc riêng xong: merge vào branch chính */
+  merge: boolean
+}
+
+const AUTHORS: Record<Role, string> = { PM: 'pm', BE: 'be', FE: 'fe', QA: 'qa', Tester: 'tester' }
+
+function workPrompt(w: WorkRequest, base: string, diff: string) {
+  const head = `Việc: "${w.title}" (yêu cầu của sếp: "${w.request}"). Branch: ${w.branch}.`
+  switch (w.step) {
+    case 'code':
+      return `${head}\nPhần của bạn: ${w.notes}\nViết code thật cho phần này, chạy build/test nếu dự án có. verdict = "done" khi xong, "fail" nếu không làm được (nói rõ lý do trong details).`
+    case 'fix':
+      return `${head}\nCần sửa theo phản hồi sau:\n${w.notes}\nSửa code, chạy lại build/test nếu có. verdict = "done" khi xong.`
+    case 'review':
+      return `${head}\nReview thay đổi của branch so với ${base}. Diff:\n\`\`\`diff\n${diff || '(không có thay đổi)'}\n\`\`\`\nĐọc thêm code liên quan nếu cần. verdict = "pass" nếu đạt, "fail" nếu cần sửa; khi fail ghi trong details từng điểm cần sửa cụ thể, area = phần cần sửa ("BE" hoặc "FE").`
+    case 'test':
+      return `${head}\nKiểm thử việc này: chạy test có sẵn (vd npm test), nếu chưa có thì viết test hoặc chạy thử để xác minh yêu cầu. verdict = "pass" nếu đạt, "fail" nếu có bug; khi fail ghi bug và cách tái hiện trong details, area = phần gây lỗi ("BE" hoặc "FE").`
+    case 'personal':
+      return `${head}\nĐây là việc sếp giao riêng cho bạn. Làm trực tiếp trong dự án theo vai trò của bạn. verdict = "done" khi xong, "fail" nếu không làm được.`
+  }
+}
+
+/** Một bước việc thật: chuyển branch, gọi Claude CLI có công cụ, commit thay đổi, merge nếu cần */
+function doWork(w: WorkRequest) {
+  return withProject(async () => {
+    const p = await ensureProject()
+    if (!p) throw new Error('chưa cấu hình dự án (agents/_project.md)')
+    const branchOk = await git(p.dir, ['rev-parse', '--verify', w.branch])
+    const sw = branchOk.code === 0 ? await git(p.dir, ['checkout', w.branch]) : await git(p.dir, ['checkout', '-b', w.branch, p.base])
+    if (sw.code !== 0) throw new Error(`không chuyển được sang branch ${w.branch}: ${sw.out}`)
+
+    let diff = ''
+    if (w.step === 'review') {
+      diff = (await git(p.dir, ['diff', `${p.base}...${w.branch}`])).out
+      if (diff.length > 40_000) diff = `${diff.slice(0, 40_000)}\n... (diff dài, đã cắt; đọc file để xem tiếp)`
+    }
+
+    const s = sessionOf(w.role, engineOf(w.role))
+    if (!s.work || s.work.project !== p.dir) s.work = { id: crypto.randomUUID(), project: p.dir, turns: 0 }
+    const work = s.work
+    const t0 = Date.now()
+    console.log(`[làm việc] ${w.role} · ${w.step} · ${w.branch}`)
+    const model = frontmatter(PROJECT_FILE, 'code_model') ?? modelFor('work', 'claude')
+    const prompt = workPrompt(w, p.base, diff)
+    let result: WorkResult
+    try {
+      result = await runClaudeWork(w.role, p.dir, prompt, work.id, work.turns > 0, model)
+    } catch (e) {
+      // lượt đầu lỗi giữa chừng (vd hết quota) nhưng CLI đã tạo session: nối tiếp thay vì tạo lại
+      if (!/already in use/i.test((e as Error).message)) throw e
+      result = await runClaudeWork(w.role, p.dir, prompt, work.id, true, model)
+    }
+    work.turns++
+    saveSessions()
+
+    // commit những gì agent đã sửa, tác giả là agent đó
+    let commit = ''
+    if ((await git(p.dir, ['status', '--porcelain'])).out) {
+      await git(p.dir, ['add', '-A'])
+      const c = await git(p.dir, ['commit', '-m', `${w.title}: ${result.summary}`.slice(0, 200), `--author=${who(w.role)} <${AUTHORS[w.role]}@itroom.local>`])
+      if (c.code === 0) commit = (await git(p.dir, ['rev-parse', '--short', 'HEAD'])).out
+    }
+
+    let merged = false
+    if (w.merge && result.verdict !== 'fail') {
+      await git(p.dir, ['checkout', p.base])
+      const m = await git(p.dir, ['merge', '--no-ff', w.branch, '-m', `Merge ${w.branch}: ${w.title}`.slice(0, 200)])
+      if (m.code === 0) merged = true
+      else {
+        await git(p.dir, ['merge', '--abort'])
+        result.details += `\n(merge vào ${p.base} lỗi: ${m.out.slice(0, 300)})`
+      }
+    }
+    const seconds = Math.round((Date.now() - t0) / 1000)
+    appendLog(`${who(w.role)} · làm việc thật (${w.step})`, `${result.summary} _(${w.branch}${commit ? ` · commit ${commit}` : ''}${merged ? ` · đã merge vào ${p.base}` : ''} · ${seconds}s)_`)
+    return { ...result, branch: w.branch, commit, merged, seconds }
   })
 }
 
@@ -918,6 +1151,7 @@ function agentDetail(role: Role) {
     title: frontmatter(file, 'chức_danh'),
     hobby: frontmatter(file, 'sở_thích'),
     persona: readMd(file),
+    skills: skillsOf(role),
     engine,
     models: Object.fromEntries(KINDS.map((k) => [k, modelFor(k, engine) ?? '(mặc định)'])),
     session: s?.id
@@ -937,6 +1171,34 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
 
   if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, engine: 'claude-cli' })
+
+  // ---- dự án thật ----
+  if (req.method === 'GET' && url.pathname === '/api/project') {
+    const p = projectConfig()
+    return send(res, 200, p ? { enabled: true, dir: p.dir, base: p.base } : { enabled: false })
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/work') {
+    const body = await readJson(req)
+    const role = typeof body?.role === 'string' ? toRole(body.role) : undefined
+    const step = (['code', 'fix', 'review', 'test', 'personal'] as const).find((s) => s === body?.step)
+    const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '')
+    const branch = str(body?.branch, 60)
+    if (!role || !step || !/^task\/[\w-]+$/.test(branch)) return send(res, 400, { error: 'invalid_request' })
+    try {
+      const result = await doWork({
+        role, step, branch,
+        title: str(body?.title, 120),
+        request: str(body?.request, 1000),
+        notes: str(body?.notes, 4000),
+        merge: body?.merge === true,
+      })
+      return send(res, 200, result)
+    } catch (e) {
+      console.error((e as Error).message)
+      return send(res, 502, { error: (e as Error).message.slice(0, 300) })
+    }
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/agent') {
     const role = toRole(url.searchParams.get('role') ?? '')
@@ -1067,6 +1329,7 @@ ensureChatFile()
 saveSessions()
 // Bật sẵn tiến trình agy chạy liên tục cho các agent dùng Antigravity; tắt hết khi server dừng
 for (const r of ROLES) prewarmWorker(r)
+void ensureProject().then((p) => console.log(p ? `Dự án thật: ${p.dir} (branch chính ${p.base})` : 'Chưa cấu hình dự án (agents/_project.md): chạy mô phỏng'))
 const stopAll = () => workers.forEach((w) => w.stop())
 process.on('exit', stopAll)
 for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))

@@ -4,7 +4,10 @@ import {
 } from '../data/agents'
 import { useStore, type Area, type Stage } from '../store'
 import { faceTo, fromAisle, motions, toAisle, walkPath, walkTo } from './motion'
-import { aiLine, markAssignmentDone, startAssignmentPolling, startEventPolling, startStatusSync, type Assignment, type Channel, type Kind } from './ai'
+import {
+  aiLine, markAssignmentDone, realMode, realWork, startAssignmentPolling, startEventPolling, startProjectPolling, startStatusSync,
+  type Assignment, type Channel, type Kind, type WorkRequest, type WorkResult,
+} from './ai'
 
 // Agent chỉ làm việc khi sếp giao (qua office/inbox.md hoặc ô giao việc trên giao diện):
 // - giao @team ...  → việc chung: cả team họp, PM phân công, rồi BE/FE → QA → Tester
@@ -109,8 +112,30 @@ function handOff(taskId: number, from: Role, to: Role, stage: Stage) {
   settle(to)
 }
 
-/** Dev ngồi code phần việc của mình */
-async function code(dev: DevRole, title: string, what: string, fallback: string) {
+// ---------- việc thật trên thư mục dự án (agents/_project.md) ----------
+
+const WORK_BUBBLE: Record<WorkRequest['step'], string> = {
+  code: '⌨️ Đang code thật...',
+  fix: '🔧 Đang sửa code...',
+  review: '🔍 Đang review diff...',
+  test: '🧪 Đang chạy test...',
+  personal: '⌨️ Đang làm việc...',
+}
+
+/** Một bước việc thật khi đang ở chế độ dự án thật; null khi mô phỏng hoặc lỗi (bước đó quay về mô phỏng) */
+async function work(role: Role, taskId: number, step: WorkRequest['step'], notes = '', merge = false): Promise<WorkResult | null> {
+  if (!realMode()) return null
+  const t = S().tasks.find((x) => x.id === taskId)!
+  S().setAgent(role, { bubble: WORK_BUBBLE[step] })
+  const r = await realWork({ role, step, branch: t.branch, title: t.title, request: t.request, notes, merge })
+  S().setAgent(role, { bubble: null })
+  return r
+}
+
+/** Dev ngồi code phần việc của mình: việc thật thì nói tóm tắt đã làm, mô phỏng thì lẩm bẩm */
+async function code(dev: DevRole, taskId: number, title: string, what: string, fallback: string, step: 'code' | 'fix' = 'code', notes = DEV_FOCUS[dev]) {
+  const r = await work(dev, taskId, step, notes)
+  if (r) return say(dev, `${r.verdict === 'fail' ? '⚠️' : '✅'} ${r.summary}`, 2500)
   await talk(dev, `Bạn đang ${what} ${DEV_FOCUS[dev]} của task "${title}". Lẩm bẩm một câu khi làm.`, fallback, 2200)
 }
 
@@ -205,7 +230,7 @@ async function teamTaskFlow(taskId: number, request: string) {
   // Đã phân công trong cuộc họp: dev bắt tay làm luôn. Fullstack: BE làm API trước, rồi FE ghép giao diện
   const firstDev: DevRole = area === 'FE' ? 'FE' : 'BE'
   handOff(taskId, 'PM', firstDev, 'dev')
-  await code(firstDev, title, 'code', 'Đang code... ⌨️')
+  await code(firstDev, taskId, title, 'code', 'Đang code... ⌨️')
 
   let owner: DevRole = firstDev
   if (area === 'FULLSTACK') {
@@ -216,9 +241,10 @@ async function teamTaskFlow(taskId: number, request: string) {
     )
     handOff(taskId, 'BE', 'FE', 'dev')
     void goHome('BE')
-    await code('FE', title, 'ghép API vào', 'Đang ghép giao diện... 🎨')
+    await code('FE', taskId, title, 'ghép API vào', 'Đang ghép giao diện... 🎨', 'code', `${DEV_FOCUS.FE}; ghép với API backend Minh vừa làm trên cùng branch (đọc code backend để biết endpoint)`)
     owner = 'FE'
   }
+  let merged = false
 
   for (;;) {
     // Code review
@@ -229,17 +255,25 @@ async function teamTaskFlow(taskId: number, request: string) {
     )
     handOff(taskId, owner, 'QA', 'review')
     void goHome(owner)
-    await talk('QA', `Bạn đang review code ${AREA_LABEL[owner]} của task "${title}". Lẩm bẩm một nhận xét khi đọc code.`, 'Đang review code...', 2500)
-    // Kết quả do mô phỏng quyết định để giữ nhịp; Claude chỉ diễn đạt cho hợp tình huống
-    if (chance(0.25)) {
+    // Dự án thật: QA đọc diff thật và kết luận; mô phỏng: tung xúc xắc, Claude chỉ diễn đạt cho hợp tình huống
+    const rv = await work('QA', taskId, 'review')
+    if (rv) await say('QA', `${rv.verdict === 'fail' ? '📝' : '👍'} ${rv.summary}`, 2500)
+    else await talk('QA', `Bạn đang review code ${AREA_LABEL[owner]} của task "${title}". Lẩm bẩm một nhận xét khi đọc code.`, 'Đang review code...', 2500)
+    if (rv ? rv.verdict === 'fail' : chance(0.25)) {
+      if (rv?.area && area === 'FULLSTACK') owner = rv.area
       await visit(
         'QA', owner,
-        { situation: `Review ${AREA_LABEL[owner]} task "${title}" KHÔNG đạt. Nêu cụ thể một điểm cần sửa.`, fallback: 'Có vài chỗ cần sửa lại nè 📝' },
+        {
+          situation: rv
+            ? `Review task "${title}" KHÔNG đạt. Góp ý bạn đã ghi: ${rv.details.slice(0, 800)}. Nói ngắn điểm cần sửa chính.`
+            : `Review ${AREA_LABEL[owner]} task "${title}" KHÔNG đạt. Nêu cụ thể một điểm cần sửa.`,
+          fallback: 'Có vài chỗ cần sửa lại nè 📝',
+        },
         { situation: 'QA yêu cầu sửa code. Bạn nhận góp ý.', fallback: 'Ok mình sửa liền!' },
       )
       handOff(taskId, 'QA', owner, 'dev')
       void goHome('QA')
-      await code(owner, title, 'sửa theo góp ý review', 'Đang sửa theo review...')
+      await code(owner, taskId, title, 'sửa theo góp ý review', 'Đang sửa theo review...', 'fix', `Góp ý review của QA: ${rv?.details ?? ''}`)
       continue
     }
 
@@ -251,22 +285,31 @@ async function teamTaskFlow(taskId: number, request: string) {
     )
     handOff(taskId, 'QA', 'Tester', 'test')
     void goHome('QA')
-    await talk('Tester', `Bạn đang chạy test case cho task "${title}".`, 'Đang chạy test case...', 2500)
-    if (chance(0.35)) {
-      const bugOwner: DevRole = area === 'FULLSTACK' ? pick<DevRole>(['BE', 'FE']) : owner
+    // Dự án thật: chạy test thật, pass thì server merge branch vào nhánh chính
+    const ts = await work('Tester', taskId, 'test', '', true)
+    if (ts) await say('Tester', `${ts.verdict === 'fail' ? '🐞' : '✅'} ${ts.summary}`, 2500)
+    else await talk('Tester', `Bạn đang chạy test case cho task "${title}".`, 'Đang chạy test case...', 2500)
+    if (ts ? ts.verdict === 'fail' : chance(0.35)) {
+      const bugOwner: DevRole = ts?.area || (area === 'FULLSTACK' ? pick<DevRole>(['BE', 'FE']) : owner)
       const task = S().tasks.find((t) => t.id === taskId)!
       S().updateTask(taskId, { bugs: task.bugs + 1 })
       await visit(
         'Tester', bugOwner,
-        { situation: `Kiểm thử task "${title}" phát hiện bug ở ${DEV_FOCUS[bugOwner]}. Mô tả ngắn gọn bug cụ thể.`, fallback: 'Phát hiện bug rồi! 🐞' },
+        {
+          situation: ts
+            ? `Kiểm thử task "${title}" phát hiện bug: ${ts.details.slice(0, 800)}. Báo ngắn gọn bug cho người phụ trách.`
+            : `Kiểm thử task "${title}" phát hiện bug ở ${DEV_FOCUS[bugOwner]}. Mô tả ngắn gọn bug cụ thể.`,
+          fallback: 'Phát hiện bug rồi! 🐞',
+        },
         { situation: 'Tester báo bug thuộc phần bạn phụ trách. Bạn nhận fix.', fallback: 'Để mình fix ngay!' },
       )
       handOff(taskId, 'Tester', bugOwner, 'dev')
       void goHome('Tester')
-      await code(bugOwner, title, 'fix bug ở', 'Đang fix bug... 🔧')
+      await code(bugOwner, taskId, title, 'fix bug ở', 'Đang fix bug... 🔧', 'fix', `Bug Tester báo: ${ts?.details ?? ''}`)
       owner = bugOwner
       continue
     }
+    merged = !!ts?.merged
     break
   }
 
@@ -280,7 +323,8 @@ async function teamTaskFlow(taskId: number, request: string) {
   const bugs = S().tasks.find((t) => t.id === taskId)!.bugs
   await talk(
     'PM',
-    `Báo cáo sếp: việc chung "${request}" (task "${title}") đã hoàn thành, qua review và test${bugs ? `, đã sửa ${bugs} bug` : ''}.`,
+    `Báo cáo sếp: việc chung "${request}" (task "${title}") đã hoàn thành, qua review và test${bugs ? `, đã sửa ${bugs} bug` : ''}` +
+      `${merged ? ', code đã merge vào nhánh chính của dự án' : ''}.`,
     `Dạ sếp, task "${title}" đã xong ạ ✅`,
     undefined, 'boss', 'boss',
   )
@@ -309,12 +353,23 @@ async function runPersonalTask(taskId: number, who: Role, request: string) {
     const title = ack.title || request
     await say(who, ack.text)
 
-    for (const step of ['bắt đầu làm', 'đang làm dở, gặp một chi tiết cần xử lý', 'sắp xong, đang kiểm tra lại']) {
-      await wait(4000)
-      await talk(who, `Bạn đang làm việc sếp giao riêng: "${request}" (task "${title}"), ${step}. Lẩm bẩm một câu.`, 'Đang làm... ⌨️', 1800)
+    // Dự án thật: làm thật trên branch riêng, xong thì merge; mô phỏng: lẩm bẩm vài câu
+    const r = await work(who, taskId, 'personal', '', true)
+    if (r) {
+      await talk(
+        who,
+        `Bạn vừa ${r.verdict === 'fail' ? 'làm nhưng CHƯA xong' : 'làm xong'} việc sếp giao riêng: "${request}". Kết quả: ${r.summary} ` +
+          `Chi tiết: ${r.details.slice(0, 600)}${r.merged ? ' Code đã merge vào nhánh chính.' : ''} Báo cáo ngắn gọn cho sếp.`,
+        r.summary, undefined, 'boss', 'boss',
+      )
+    } else {
+      for (const step of ['bắt đầu làm', 'đang làm dở, gặp một chi tiết cần xử lý', 'sắp xong, đang kiểm tra lại']) {
+        await wait(4000)
+        await talk(who, `Bạn đang làm việc sếp giao riêng: "${request}" (task "${title}"), ${step}. Lẩm bẩm một câu.`, 'Đang làm... ⌨️', 1800)
+      }
+      await wait(2500)
+      await talk(who, `Bạn vừa làm xong việc sếp giao riêng: "${request}". Báo cáo kết quả ngắn gọn cho sếp.`, 'Dạ sếp, em làm xong rồi ạ ✅', undefined, 'boss', 'boss')
     }
-    await wait(2500)
-    await talk(who, `Bạn vừa làm xong việc sếp giao riêng: "${request}". Báo cáo kết quả ngắn gọn cho sếp.`, 'Dạ sếp, em làm xong rồi ạ ✅', undefined, 'boss', 'boss')
     S().updateTask(taskId, { stage: 'done' })
     S().setAgent(who, { taskId: null })
     settle(who)
@@ -408,6 +463,7 @@ export function startWorkflow() {
   g.__itroomStarted = true
   startEventPolling()
   startStatusSync()
+  startProjectPolling()
   startAssignmentPolling(enqueue)
   startIdleLife()
   void workLoop()
