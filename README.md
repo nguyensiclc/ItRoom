@@ -65,6 +65,18 @@ Agent có dòng `cli: antigravity` ở đầu file persona thì nói bằng Anti
 
 Mỗi agent chỉ nhận tin của những kênh mình tham gia (cặp riêng của mình, kênh với sếp, kênh team), nên chuyện riêng giữa hai người không lộ sang người khác.
 
+## Xem chi tiết agent
+
+Bấm vào người que hoặc thẻ agent ở góc dưới bên phải để mở bảng chi tiết:
+
+- Trạng thái, task đang giữ, sở thích, số việc đã xong.
+- CLI đang dùng (Claude Code / Antigravity, tiến trình agy có đang chạy liên tục không), số lượt và lệnh mở session.
+- Model cho từng loại việc.
+- Các kênh chat của agent: số tin, số tin chưa đọc, câu mới nhất (rê chuột để xem 3 câu gần nhất).
+- Tính cách từ `agents/<Role>.md` và các câu agent nói gần đây.
+
+Phần CLI, model và kênh chat lấy từ `GET /api/agent?role=BE`, tự làm mới mỗi 4 giây; không chạy server thì chỉ hiện phần trạng thái.
+
 ## Lúc rảnh
 
 Agent không giữ task nào thì ngồi chơi theo sở thích: Lan đọc sách 📖, Minh chơi game 🎮, Khoa nghe nhạc 🎧, Hà xem phim 🍿, Tú xoay rubik 🧩. Thỉnh thoảng một người rảnh sang khoang người rảnh khác tán gẫu (3 câu, ghi vào file riêng của hai người). Lẩm bẩm về sở thích chỉ là câu có sẵn, không gọi Claude.

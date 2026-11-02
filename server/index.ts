@@ -719,10 +719,55 @@ function readJson(req: http.IncomingMessage): Promise<Record<string, unknown> | 
   })
 }
 
+/** Thông tin chi tiết một agent cho bảng "chi tiết" trên giao diện */
+function agentDetail(role: Role) {
+  const file = path.join(AGENTS_DIR, `${role}.md`)
+  const engine = engineOf(role)
+  const s = sessions[role]
+  const w = workers.get(role)
+  const channels = (fs.existsSync(CHANNEL_DIR) ? fs.readdirSync(CHANNEL_DIR) : [])
+    .filter((n) => n === 'team.md' || n === `Sep-${role}.md` || n.replace(/\.md$/, '').split('-').includes(role))
+    .map((n) => {
+      const all = messages(path.join(CHANNEL_DIR, n))
+      const recent = all.slice(-3).map((l) => {
+        const m = l.match(/^- (\S+) \*\*(.+?):\*\* (.*)$/)
+        return m ? { time: m[1], who: m[2], text: m[3] } : { time: '', who: '', text: l.slice(2) }
+      })
+      const unreadCount = s ? Math.max(0, all.length - (s.seen[n] ?? 0)) : 0
+      return { name: n, count: all.length, unread: unreadCount, recent }
+    })
+  return {
+    role,
+    name: NAMES[role],
+    title: frontmatter(file, 'chức_danh'),
+    hobby: frontmatter(file, 'sở_thích'),
+    persona: readMd(file),
+    engine,
+    models: Object.fromEntries(KINDS.map((k) => [k, modelFor(k, engine) ?? '(mặc định)'])),
+    session: s?.id
+      ? {
+          id: s.id,
+          started: s.started,
+          turns: s.turns,
+          open: engine === 'agy' ? `cd office/agy-workspace && agy --conversation ${s.id}` : `claude --resume ${s.id}`,
+        }
+      : null,
+    worker: engine === 'agy' ? { alive: !!w?.alive, model: w?.model ?? null } : null,
+    status: statuses[role] ?? null,
+    channels,
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
 
   if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, engine: 'claude-cli' })
+
+  if (req.method === 'GET' && url.pathname === '/api/agent') {
+    const role = toRole(url.searchParams.get('role') ?? '')
+    if (!role) return send(res, 400, { error: 'role không hợp lệ' })
+    return send(res, 200, agentDetail(role))
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/events') {
     const since = Number(url.searchParams.get('since') ?? 0)

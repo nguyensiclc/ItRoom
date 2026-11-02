@@ -2,6 +2,7 @@ import { AGENTS, agentById, HOBBIES } from '../data/agents'
 import { useStore, type AnimState, type Stage, type Task } from '../store'
 import { useState } from 'react'
 import { resetAiBackoff, sendToInbox } from '../sim/ai'
+import { AgentDetail } from './AgentDetail'
 
 const STAGES: { ids: Stage[]; label: string }[] = [
   { ids: ['todo', 'meeting'], label: 'Cần làm' },
@@ -56,7 +57,6 @@ export function Hud() {
   const target = targets.includes(chatTo) ? chatTo : targets[0]
   const [sending, setSending] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
-  const taskTitle =(id: number | null) => tasks.find((t) => t.id === id)?.title
 
   return (
     <div className="hud">
@@ -146,6 +146,8 @@ export function Hud() {
         {chatError && <div className="chat-error">{chatError}</div>}
       </section>
 
+      {selected && <AgentDetail key={selected} role={selected} />}
+
       <section className="agents">
         {AGENTS.map((a) => {
           const r = agents[a.id]
@@ -161,7 +163,6 @@ export function Hud() {
               <span className="state">
                 {r.state === 'hobby' ? `${HOBBIES[a.hobby].emoji} ${HOBBIES[a.hobby].label}` : STATE_LABEL[r.state]}
               </span>
-              {selected === a.id && <small>Task: {taskTitle(r.taskId) ?? '—'}</small>}
             </button>
           )
         })}

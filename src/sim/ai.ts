@@ -192,3 +192,27 @@ export function startEventPolling() {
   }
   void poll()
 }
+
+export interface AgentDetail {
+  role: Role
+  name: string
+  title?: string
+  hobby?: string
+  persona: string
+  engine: 'claude' | 'agy'
+  models: Record<Kind, string>
+  session: { id: string; started: string; turns: number; open: string } | null
+  worker: { alive: boolean; model: string | null } | null
+  status: string | null
+  channels: { name: string; count: number; unread: number; recent: { time: string; who: string; text: string }[] }[]
+}
+
+/** Chi tiết agent từ server (persona, session CLI, model, kênh chat); null khi server không chạy */
+export async function fetchAgentDetail(role: Role): Promise<AgentDetail | null> {
+  try {
+    const res = await fetch(`/api/agent?role=${role}`)
+    return res.ok ? ((await res.json()) as AgentDetail) : null
+  } catch {
+    return null
+  }
+}

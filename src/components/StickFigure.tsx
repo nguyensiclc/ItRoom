@@ -4,19 +4,31 @@ import { MathUtils, type Group } from 'three'
 import type { Hobby, Role } from '../data/agents'
 import type { AnimState } from '../store'
 
-const R = 0.045 // bán kính "nét" người que
 const UPPER_ARM = 0.3
-const FOREARM = 0.28
+const FOREARM = 0.26
 const THIGH = 0.45
-const SHIN = 0.45
+const SHIN = 0.42
 const HIP_Y = 0.9
 const SIT_DROP = 0.4 // hạ hông từ 0.9 xuống 0.5 khi ngồi ghế
+const SHOULDER_X = 0.16
+const HEAD_SCALE = 1.2 // đầu to kiểu chibi; phụ kiện vẽ theo đầu bán kính 0.14 rồi phóng theo
 
-function Bone({ len, color }: { len: number; color: string }) {
+type HairStyle = 'long' | 'spiky' | 'short' | 'bob'
+
+/** Ngoại hình riêng từng người */
+const LOOKS: Record<Role, { skin: string; hair: string; style: HairStyle; pants: string; shoes: string }> = {
+  PM: { skin: '#f6d3b3', hair: '#3b2416', style: 'long', pants: '#1e293b', shoes: '#111827' },
+  BE: { skin: '#e9bb8f', hair: '#111111', style: 'spiky', pants: '#334155', shoes: '#f8fafc' },
+  FE: { skin: '#f1c7a1', hair: '#2b1a10', style: 'short', pants: '#3f5f8f', shoes: '#7c2d12' },
+  QA: { skin: '#f8d8bd', hair: '#5b3420', style: 'bob', pants: '#475569', shoes: '#be123c' },
+  Tester: { skin: '#dfac83', hair: '#1c1917', style: 'short', pants: '#3f3f46', shoes: '#f8fafc' },
+}
+
+function Limb({ len, radius, color }: { len: number; radius: number; color: string }) {
   return (
     <mesh position={[0, -len / 2, 0]} castShadow>
-      <capsuleGeometry args={[R, len, 4, 8]} />
-      <meshStandardMaterial color={color} />
+      <capsuleGeometry args={[radius, len, 6, 12]} />
+      <meshStandardMaterial color={color} roughness={0.75} />
     </mesh>
   )
 }
@@ -30,66 +42,229 @@ function Joint({ jref, position, children }: { jref: RefObject<Group | null>; po
   )
 }
 
-function Accessory({ role }: { role: Role }) {
-  switch (role) {
-    case 'PM': // cà vạt
+/** Chỏm cầu: theta tính từ đỉnh xuống */
+function Cap({ r, theta, color, rotation, position }: { r: number; theta: number; color: string; rotation?: [number, number, number]; position?: [number, number, number] }) {
+  return (
+    <mesh rotation={rotation} position={position} castShadow>
+      <sphereGeometry args={[r, 24, 14, 0, Math.PI * 2, 0, theta]} />
+      <meshStandardMaterial color={color} roughness={0.85} />
+    </mesh>
+  )
+}
+
+function Hair({ style, color }: { style: HairStyle; color: string }) {
+  switch (style) {
+    case 'long': // tóc dài buông sau lưng
       return (
-        <mesh position={[0, -0.32, 0.05]}>
-          <boxGeometry args={[0.06, 0.2, 0.015]} />
-          <meshStandardMaterial color="#dc2626" />
-        </mesh>
+        <group>
+          <Cap r={0.15} theta={1.3} color={color} position={[0, 0.005, -0.008]} />
+          <Cap r={0.152} theta={1.3} color={color} rotation={[-1.3, 0, 0]} />
+          <mesh position={[0, -0.12, -0.08]} castShadow>
+            <capsuleGeometry args={[0.1, 0.16, 6, 12]} />
+            <meshStandardMaterial color={color} roughness={0.85} />
+          </mesh>
+        </group>
       )
+    case 'bob': // tóc ngắn ngang cằm + búi nhỏ
+      return (
+        <group>
+          <Cap r={0.152} theta={1.3} color={color} position={[0, 0, -0.006]} />
+          <Cap r={0.155} theta={1.5} color={color} rotation={[-1.4, 0, 0]} />
+          <mesh position={[0, 0.07, -0.16]} castShadow>
+            <sphereGeometry args={[0.055, 12, 10]} />
+            <meshStandardMaterial color={color} roughness={0.85} />
+          </mesh>
+        </group>
+      )
+    case 'spiky': // tóc dựng
+      return (
+        <group>
+          <Cap r={0.148} theta={1.2} color={color} position={[0, 0.004, -0.01]} />
+          {[-0.07, -0.025, 0.025, 0.07].map((x, i) => (
+            <mesh key={x} position={[x, 0.13, 0.03 - i * 0.02]} rotation={[-0.35, 0, -x * 4]} castShadow>
+              <coneGeometry args={[0.035, 0.09, 6]} />
+              <meshStandardMaterial color={color} roughness={0.85} />
+            </mesh>
+          ))}
+        </group>
+      )
+    case 'short':
+      return <Cap r={0.148} theta={1.15} color={color} position={[0, 0.006, -0.012]} />
+  }
+}
+
+/** Mắt (biết chớp), lông mày, miệng cười, má hồng, tai */
+function Face({ eyes, skin }: { eyes: RefObject<Group | null>; skin: string }) {
+  return (
+    <group>
+      <group ref={eyes} position={[0, 0.012, 0.124]}>
+        {[-1, 1].map((s) => (
+          <group key={s} position={[s * 0.05, 0, 0]}>
+            <mesh scale={[1, 1.25, 0.6]}>
+              <sphereGeometry args={[0.021, 12, 10]} />
+              <meshStandardMaterial color="#1f2937" roughness={0.3} />
+            </mesh>
+            <mesh position={[0.006, 0.008, 0.012]}>
+              <sphereGeometry args={[0.006, 6, 6]} />
+              <meshBasicMaterial color="#ffffff" />
+            </mesh>
+          </group>
+        ))}
+      </group>
+      {[-1, 1].map((s) => (
+        <mesh key={s} position={[s * 0.05, 0.055, 0.127]} rotation={[0, 0, s * -0.12]}>
+          <boxGeometry args={[0.038, 0.008, 0.008]} />
+          <meshStandardMaterial color="#3f2a1d" />
+        </mesh>
+      ))}
+      <mesh position={[0, -0.036, 0.13]} rotation={[0.25, 0, Math.PI]}>
+        <torusGeometry args={[0.024, 0.006, 6, 16, Math.PI]} />
+        <meshStandardMaterial color="#9f1239" />
+      </mesh>
+      {[-1, 1].map((s) => (
+        <mesh key={s} position={[s * 0.083, -0.025, 0.112]} scale={[1, 0.6, 0.3]}>
+          <sphereGeometry args={[0.022, 10, 8]} />
+          <meshStandardMaterial color="#fb7185" transparent opacity={0.45} />
+        </mesh>
+      ))}
+      {[-1, 1].map((s) => (
+        <mesh key={s} position={[s * 0.138, 0, 0]} scale={[0.5, 1, 0.8]}>
+          <sphereGeometry args={[0.03, 10, 8]} />
+          <meshStandardMaterial color={skin} roughness={0.7} />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
+/** Phụ kiện đội trên đầu (toạ độ theo đầu bán kính 0.14) */
+function HeadAccessory({ role }: { role: Role }) {
+  switch (role) {
     case 'FE': // mũ nồi kiểu designer
       return (
-        <group position={[0.02, 0.11, 0]} rotation={[0, 0, -0.25]}>
-          <mesh scale={[1, 0.35, 1]}>
-            <sphereGeometry args={[0.15, 20, 12]} />
-            <meshStandardMaterial color="#0f766e" />
+        <group position={[0.02, 0.12, 0]} rotation={[0, 0, -0.25]}>
+          <mesh scale={[1, 0.35, 1]} castShadow>
+            <sphereGeometry args={[0.16, 24, 12]} />
+            <meshStandardMaterial color="#0f766e" roughness={0.9} />
           </mesh>
-          <mesh position={[0, 0.055, 0]}>
+          <mesh position={[0, 0.058, 0]}>
             <sphereGeometry args={[0.018, 8, 8]} />
             <meshStandardMaterial color="#0f766e" />
           </mesh>
         </group>
       )
-    case 'BE': // tai nghe
+    case 'BE': // tai nghe gaming có đèn
       return (
         <group>
           <mesh>
-            <torusGeometry args={[0.155, 0.018, 8, 24, Math.PI]} />
-            <meshStandardMaterial color="#111827" />
+            <torusGeometry args={[0.165, 0.016, 8, 32, Math.PI]} />
+            <meshStandardMaterial color="#111827" metalness={0.4} roughness={0.4} />
           </mesh>
           {[-1, 1].map((s) => (
-            <mesh key={s} position={[s * 0.15, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
-              <cylinderGeometry args={[0.05, 0.05, 0.04, 16]} />
-              <meshStandardMaterial color="#111827" />
-            </mesh>
+            <group key={s} position={[s * 0.157, -0.01, 0]} rotation={[0, 0, Math.PI / 2]}>
+              <mesh>
+                <cylinderGeometry args={[0.055, 0.055, 0.045, 20]} />
+                <meshStandardMaterial color="#111827" metalness={0.4} roughness={0.4} />
+              </mesh>
+              <mesh position={[0, -s * 0.024, 0]}>
+                <cylinderGeometry args={[0.035, 0.035, 0.005, 20]} />
+                <meshStandardMaterial color="#22c55e" emissive="#22c55e" emissiveIntensity={1.2} />
+              </mesh>
+            </group>
           ))}
         </group>
       )
-    case 'QA': // kính
+    case 'QA': // kính gọng tròn
       return (
-        <group position={[0, 0.02, 0.13]}>
+        <group position={[0, 0.012, 0.138]}>
           {[-1, 1].map((s) => (
             <mesh key={s} position={[s * 0.05, 0, 0]}>
-              <torusGeometry args={[0.035, 0.008, 6, 16]} />
-              <meshStandardMaterial color="#111827" />
+              <torusGeometry args={[0.036, 0.006, 8, 20]} />
+              <meshStandardMaterial color="#7c2d12" metalness={0.3} roughness={0.4} />
             </mesh>
           ))}
+          <mesh>
+            <boxGeometry args={[0.03, 0.005, 0.005]} />
+            <meshStandardMaterial color="#7c2d12" />
+          </mesh>
         </group>
       )
-    case 'Tester': // mũ lưỡi trai
+    case 'Tester': // mũ lưỡi trai đội lệch
       return (
-        <group>
-          <mesh>
-            <sphereGeometry args={[0.148, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
-            <meshStandardMaterial color="#a855f7" />
+        <group rotation={[0, 0.25, 0]}>
+          <Cap r={0.153} theta={Math.PI / 2} color="#a855f7" position={[0, 0.01, 0]} />
+          <mesh position={[0, 0.025, 0.14]} rotation={[0.12, 0, 0]} scale={[1, 1, 0.75]} castShadow>
+            <cylinderGeometry args={[0.12, 0.12, 0.012, 24, 1, false, -Math.PI / 2, Math.PI]} />
+            <meshStandardMaterial color="#7e22ce" />
           </mesh>
-          <mesh position={[0, 0.02, 0.15]}>
-            <boxGeometry args={[0.2, 0.015, 0.12]} />
+          <mesh position={[0, 0.163, 0]}>
+            <sphereGeometry args={[0.015, 8, 8]} />
             <meshStandardMaterial color="#7e22ce" />
           </mesh>
         </group>
+      )
+    default:
+      return null
+  }
+}
+
+/** Chi tiết trên áo theo vai trò (toạ độ theo hông) */
+function Outfit({ role, color }: { role: Role; color: string }) {
+  switch (role) {
+    case 'PM': // vest màu, cổ sơ mi trắng, cà vạt đỏ
+      return (
+        <group>
+          <mesh position={[0, 0.45, 0.095]} rotation={[0.25, 0, 0]}>
+            <boxGeometry args={[0.09, 0.13, 0.02]} />
+            <meshStandardMaterial color="#f8fafc" />
+          </mesh>
+          <mesh position={[0, 0.38, 0.12]} rotation={[0.1, 0, 0]}>
+            <boxGeometry args={[0.032, 0.17, 0.012]} />
+            <meshStandardMaterial color="#dc2626" />
+          </mesh>
+        </group>
+      )
+    case 'BE': // mũ hoodie sau gáy + dây rút
+      return (
+        <group>
+          <mesh position={[0, 0.56, -0.07]} rotation={[0.9, 0, 0]}>
+            <torusGeometry args={[0.085, 0.04, 8, 16]} />
+            <meshStandardMaterial color={color} roughness={0.9} />
+          </mesh>
+          {[-1, 1].map((s) => (
+            <mesh key={s} position={[s * 0.035, 0.43, 0.118]}>
+              <cylinderGeometry args={[0.006, 0.006, 0.12, 6]} />
+              <meshStandardMaterial color="#f8fafc" />
+            </mesh>
+          ))}
+        </group>
+      )
+    case 'FE': // khăn quàng
+      return (
+        <mesh position={[0, 0.55, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.085, 0.035, 8, 20]} />
+          <meshStandardMaterial color="#fbbf24" roughness={0.9} />
+        </mesh>
+      )
+    case 'QA': // thẻ nhân viên đeo cổ
+      return (
+        <group>
+          <mesh position={[0, 0.47, 0.085]} rotation={[-0.35, 0, Math.PI]}>
+            <torusGeometry args={[0.07, 0.005, 6, 16, Math.PI]} />
+            <meshStandardMaterial color="#1d4ed8" />
+          </mesh>
+          <mesh position={[0, 0.36, 0.122]}>
+            <boxGeometry args={[0.06, 0.08, 0.008]} />
+            <meshStandardMaterial color="#f8fafc" />
+          </mesh>
+        </group>
+      )
+    case 'Tester': // hình con bọ trên áo phông
+      return (
+        <mesh position={[0, 0.36, 0.12]} rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.035, 0.035, 0.006, 16]} />
+          <meshStandardMaterial color="#facc15" />
+        </mesh>
       )
   }
 }
@@ -101,33 +276,33 @@ function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null
   switch (hobby) {
     case 'read': // sách mở hình chữ V
       return (
-        <group position={[0, 0.27, 0.4]} rotation={[-0.7, 0, 0]}>
+        <group position={[0, 0.27, 0.42]} rotation={[-0.7, 0, 0]}>
           {[-1, 1].map((s) => (
-            <mesh key={s} position={[s * 0.065, 0, 0]} rotation={[0, s * -0.35, 0]}>
-              <boxGeometry args={[0.13, 0.19, 0.012]} />
+            <mesh key={s} position={[s * 0.07, 0, 0]} rotation={[0, s * -0.35, 0]}>
+              <boxGeometry args={[0.14, 0.2, 0.012]} />
               <meshStandardMaterial color={s < 0 ? '#fef3c7' : '#fde68a'} />
             </mesh>
           ))}
           <mesh position={[0, 0, -0.012]}>
-            <boxGeometry args={[0.02, 0.19, 0.01]} />
+            <boxGeometry args={[0.02, 0.2, 0.01]} />
             <meshStandardMaterial color="#b91c1c" />
           </mesh>
         </group>
       )
     case 'game': // máy chơi game cầm tay
       return (
-        <group position={[0, 0.24, 0.42]} rotation={[-0.5, 0, 0]}>
+        <group position={[0, 0.24, 0.44]} rotation={[-0.5, 0, 0]}>
           <mesh>
-            <boxGeometry args={[0.22, 0.035, 0.09]} />
+            <boxGeometry args={[0.26, 0.035, 0.1]} />
             <meshStandardMaterial color="#1f2937" />
           </mesh>
           <mesh position={[0, 0.02, 0]}>
-            <boxGeometry args={[0.09, 0.005, 0.06]} />
-            <meshStandardMaterial color="#0f172a" emissive="#22d3ee" emissiveIntensity={0.8} />
+            <boxGeometry args={[0.11, 0.005, 0.07]} />
+            <meshStandardMaterial color="#0f172a" emissive="#22d3ee" emissiveIntensity={0.9} />
           </mesh>
-          {[-0.08, 0.08].map((x) => (
+          {[-0.095, 0.095].map((x) => (
             <mesh key={x} position={[x, 0.022, 0]}>
-              <sphereGeometry args={[0.012, 8, 8]} />
+              <sphereGeometry args={[0.013, 8, 8]} />
               <meshStandardMaterial color={x < 0 ? '#ef4444' : '#3b82f6'} />
             </mesh>
           ))}
@@ -135,9 +310,9 @@ function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null
       )
     case 'rubik':
       return (
-        <group ref={spin} position={[0, 0.24, 0.42]}>
+        <group ref={spin} position={[0, 0.24, 0.44]}>
           <mesh>
-            <boxGeometry args={[0.09, 0.09, 0.09]} />
+            <boxGeometry args={[0.1, 0.1, 0.1]} />
             {RUBIK_COLORS.map((c, i) => (
               <meshStandardMaterial key={c} attach={`material-${i}`} color={c} />
             ))}
@@ -146,7 +321,7 @@ function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null
       )
     case 'movie': // xô bỏng ngô trên đùi
       return (
-        <group position={[0.13, 0.1, 0.25]}>
+        <group position={[0.15, 0.12, 0.26]}>
           <mesh>
             <cylinderGeometry args={[0.07, 0.05, 0.13, 12]} />
             <meshStandardMaterial color="#dc2626" />
@@ -172,9 +347,11 @@ interface Props {
 }
 
 export function StickFigure({ role, color, hobby, state, phase }: Props) {
+  const look = LOOKS[role]
   const spin = useRef<Group>(null)
   const body = useRef<Group>(null)
   const head = useRef<Group>(null)
+  const eyes = useRef<Group>(null)
   const lArm = useRef<Group>(null)
   const lFore = useRef<Group>(null)
   const rArm = useRef<Group>(null)
@@ -203,8 +380,8 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
         rt = -s * 0.6
         ls = Math.max(0, -Math.cos(t * 9)) * 0.7
         rs = Math.max(0, Math.cos(t * 9)) * 0.7
-        la = [-s * 0.5, -0.15]
-        ra = [s * 0.5, 0.15]
+        la = [-s * 0.5, -0.12]
+        ra = [s * 0.5, 0.12]
         lf = rf = -0.35
         bob = Math.abs(Math.sin(t * 9)) * 0.04
         break
@@ -212,8 +389,8 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
       case 'work': // ngồi gõ phím
         lt = rt = -Math.PI / 2
         ls = rs = Math.PI / 2
-        la = [-0.9, -0.1]
-        ra = [-0.9, 0.1]
+        la = [-0.9, 0.1]
+        ra = [-0.9, -0.1]
         lf = -0.7 + Math.sin(t * 22) * 0.08
         rf = -0.7 + Math.sin(t * 22 + 1.7) * 0.08
         hx = 0.12 + Math.sin(t * 0.7) * 0.05
@@ -222,8 +399,8 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
         lt = rt = -Math.PI / 2
         ls = rs = Math.PI / 2
         // mặc định: hai tay cầm đồ vật trước ngực
-        la = [-0.6, -0.15]
-        ra = [-0.6, 0.15]
+        la = [-0.6, 0.18]
+        ra = [-0.6, -0.18]
         lf = rf = -0.9
         if (hobby === 'read') {
           hx = 0.4
@@ -237,15 +414,15 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
           lf = rf = -1.0
           if (spin.current) spin.current.rotation.set(t * 0.9, t * 1.3, 0)
         } else if (hobby === 'music') {
-          la = [-0.4, -0.1]
-          ra = [-0.4, 0.1]
+          la = [-0.4, -0.05]
+          ra = [-0.4, 0.05]
           hx = Math.sin(t * 6) * 0.15
           hy = Math.sin(t * 3) * 0.2
           bob = Math.abs(Math.sin(t * 6)) * 0.015
         } else if (hobby === 'movie') {
           const popcorn = Math.max(0, Math.sin(t * 1.3)) ** 4 // đưa bỏng ngô lên miệng
-          la = [-0.4, -0.1]
-          ra = [-0.5 - popcorn * 0.6, 0.1]
+          la = [-0.4, -0.05]
+          ra = [-0.5 - popcorn * 0.6, -0.05]
           lf = -0.9
           rf = -0.9 - popcorn * 1.2
           hx = -0.05
@@ -255,8 +432,8 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
       case 'listen': // ngồi, quay đầu sang khách
         lt = rt = -Math.PI / 2
         ls = rs = Math.PI / 2
-        la = [-0.4, -0.1]
-        ra = [-0.4, 0.1]
+        la = [-0.4, -0.05]
+        ra = [-0.4, 0.05]
         lf = rf = -0.9
         hy = -0.7
         hx = Math.sin(t * 5) * 0.08
@@ -284,67 +461,81 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
       lerpX(head.current, hx)
       head.current.rotation.y = MathUtils.lerp(head.current.rotation.y, hy, k)
     }
+    // chớp mắt vài giây một lần
+    if (eyes.current) eyes.current.scale.y = (t * 0.27) % 1 < 0.035 ? 0.1 : 1
     if (body.current) body.current.position.y = -SIT_DROP * sit.current + bob
   })
+
+  const arm = (jref: RefObject<Group | null>, fore: RefObject<Group | null>, side: number) => (
+    <Joint jref={jref} position={[side * SHOULDER_X, 0.5, 0]}>
+      <mesh castShadow>
+        <sphereGeometry args={[0.058, 12, 10]} />
+        <meshStandardMaterial color={color} roughness={0.8} />
+      </mesh>
+      <Limb len={UPPER_ARM} radius={0.048} color={color} />
+      <Joint jref={fore} position={[0, -UPPER_ARM, 0]}>
+        <Limb len={FOREARM} radius={0.038} color={look.skin} />
+        <mesh position={[0, -FOREARM - 0.02, 0]} castShadow>
+          <sphereGeometry args={[0.048, 12, 10]} />
+          <meshStandardMaterial color={look.skin} roughness={0.7} />
+        </mesh>
+      </Joint>
+    </Joint>
+  )
+
+  const leg = (jref: RefObject<Group | null>, shin: RefObject<Group | null>, side: number) => (
+    <Joint jref={jref} position={[side * 0.075, 0, 0]}>
+      <Limb len={THIGH} radius={0.062} color={look.pants} />
+      <Joint jref={shin} position={[0, -THIGH, 0]}>
+        <Limb len={SHIN} radius={0.054} color={look.pants} />
+        {/* giày */}
+        <mesh position={[0, -SHIN - 0.04, 0.04]} scale={[1, 0.6, 1.5]} castShadow>
+          <sphereGeometry args={[0.065, 14, 10]} />
+          <meshStandardMaterial color={look.shoes} roughness={0.5} />
+        </mesh>
+      </Joint>
+    </Joint>
+  )
 
   return (
     <group ref={body}>
       <group position={[0, HIP_Y, 0]}>
-        {/* thân */}
-        <mesh position={[0, 0.27, 0]} castShadow>
-          <capsuleGeometry args={[R, 0.5, 4, 8]} />
-          <meshStandardMaterial color={color} />
+        {/* thân áo */}
+        <mesh position={[0, 0.32, 0]} scale={[1, 1, 0.82]} castShadow>
+          <capsuleGeometry args={[0.13, 0.27, 8, 20]} />
+          <meshStandardMaterial color={color} roughness={0.8} />
         </mesh>
+        {/* hông quần */}
+        <mesh position={[0, 0.03, 0]} scale={[1, 0.7, 0.8]} castShadow>
+          <sphereGeometry args={[0.135, 18, 12]} />
+          <meshStandardMaterial color={look.pants} roughness={0.8} />
+        </mesh>
+        {/* cổ */}
+        <mesh position={[0, 0.6, 0]}>
+          <cylinderGeometry args={[0.045, 0.05, 0.08, 12]} />
+          <meshStandardMaterial color={look.skin} roughness={0.7} />
+        </mesh>
+        <Outfit role={role} color={color} />
 
         {/* đầu */}
-        <group ref={head} position={[0, 0.72, 0]}>
-          <mesh castShadow>
-            <sphereGeometry args={[0.14, 24, 16]} />
-            <meshStandardMaterial color="#fef3c7" />
-          </mesh>
-          {[-1, 1].map((s) => (
-            <mesh key={s} position={[s * 0.048, 0.02, 0.128]}>
-              <sphereGeometry args={[0.018, 8, 8]} />
-              <meshStandardMaterial color="#111827" />
+        <group ref={head} position={[0, 0.78, 0]}>
+          <group scale={HEAD_SCALE}>
+            <mesh castShadow>
+              <sphereGeometry args={[0.14, 32, 20]} />
+              <meshStandardMaterial color={look.skin} roughness={0.65} />
             </mesh>
-          ))}
-          {role !== 'PM' && <Accessory role={role} />}
-        </group>
-        {role === 'PM' && (
-          <group position={[0, 0.52, 0]}>
-            <Accessory role={role} />
+            <Face eyes={eyes} skin={look.skin} />
+            <Hair style={look.style} color={look.hair} />
+            <HeadAccessory role={role} />
           </group>
-        )}
+        </group>
 
         {state === 'hobby' && <HobbyProp hobby={hobby} spin={spin} />}
 
-        {/* tay */}
-        <Joint jref={lArm} position={[-0.07, 0.5, 0]}>
-          <Bone len={UPPER_ARM} color={color} />
-          <Joint jref={lFore} position={[0, -UPPER_ARM, 0]}>
-            <Bone len={FOREARM} color={color} />
-          </Joint>
-        </Joint>
-        <Joint jref={rArm} position={[0.07, 0.5, 0]}>
-          <Bone len={UPPER_ARM} color={color} />
-          <Joint jref={rFore} position={[0, -UPPER_ARM, 0]}>
-            <Bone len={FOREARM} color={color} />
-          </Joint>
-        </Joint>
-
-        {/* chân */}
-        <Joint jref={lThigh} position={[-0.07, 0, 0]}>
-          <Bone len={THIGH} color={color} />
-          <Joint jref={lShin} position={[0, -THIGH, 0]}>
-            <Bone len={SHIN} color={color} />
-          </Joint>
-        </Joint>
-        <Joint jref={rThigh} position={[0.07, 0, 0]}>
-          <Bone len={THIGH} color={color} />
-          <Joint jref={rShin} position={[0, -THIGH, 0]}>
-            <Bone len={SHIN} color={color} />
-          </Joint>
-        </Joint>
+        {arm(lArm, lFore, -1)}
+        {arm(rArm, rFore, 1)}
+        {leg(lThigh, lShin, -1)}
+        {leg(rThigh, rShin, 1)}
       </group>
     </group>
   )
