@@ -1,10 +1,11 @@
 import { useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { RoundedBox } from '@react-three/drei'
-import { CanvasTexture, MathUtils, RepeatWrapping, SRGBColorSpace, type Group, type MeshStandardMaterial } from 'three'
+import { CanvasTexture, MathUtils, RepeatWrapping, SRGBColorSpace, type Group, type Mesh, type MeshStandardMaterial } from 'three'
 import { AGENTS, CUBICLE_FRONT_Z, CUBICLE_WIDTH, DESK_Z, MEETING_CENTER, SEAT_Z, type AgentDef } from '../data/agents'
 import { useStore } from '../store'
 import { positions, yaws } from '../sim/motion'
+import { mouseOffset, usingMouse } from './StickFigure'
 
 type V3 = [number, number, number]
 
@@ -162,12 +163,70 @@ function sideTexture(owner: AgentDef) {
   return tex
 }
 
-/** Màn hình: hiện code (màn chính) hoặc màn phụ; màn chính đổi màu liên tục như đang chiếu phim khi chủ khoang xem phim */
+const lockTextures = new Map<string, CanvasTexture>()
+
+/** Màn hình khoá: hình nền theo màu chủ khoang, ổ khoá, tên và chữ "Đã khoá" */
+function lockTexture(owner: AgentDef) {
+  let tex = lockTextures.get(owner.id)
+  if (tex) return tex
+  const c = document.createElement('canvas')
+  c.width = 512
+  c.height = 288
+  const g = c.getContext('2d')!
+  const bg = g.createLinearGradient(0, 0, 512, 288)
+  bg.addColorStop(0, '#0f172a')
+  bg.addColorStop(1, owner.color)
+  g.fillStyle = bg
+  g.fillRect(0, 0, 512, 288)
+  // ổ khoá
+  g.strokeStyle = '#f8fafc'
+  g.lineWidth = 10
+  g.beginPath()
+  g.arc(256, 104, 26, Math.PI, 0)
+  g.lineTo(282, 122)
+  g.moveTo(230, 104)
+  g.lineTo(230, 122)
+  g.stroke()
+  g.fillStyle = '#f8fafc'
+  g.beginPath()
+  g.roundRect(214, 118, 84, 62, 10)
+  g.fill()
+  g.fillStyle = '#0f172a'
+  g.beginPath()
+  g.arc(256, 144, 8, 0, Math.PI * 2)
+  g.fill()
+  g.fillRect(253, 144, 6, 20)
+  g.fillStyle = '#f8fafc'
+  g.textAlign = 'center'
+  g.font = '600 26px system-ui, sans-serif'
+  g.fillText(owner.name, 256, 222)
+  g.font = '18px system-ui, sans-serif'
+  g.fillStyle = 'rgba(248, 250, 252, 0.75)'
+  g.fillText('Đã khoá', 256, 250)
+  tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  lockTextures.set(owner.id, tex)
+  return tex
+}
+
+/** Chủ khoang đã rời chỗ ngồi (đi họp, sang khoang khác...) */
+const awayFromSeat = (owner: AgentDef) => {
+  const p = positions[owner.id]
+  return Math.hypot(p.x - owner.seat[0], p.z - owner.seat[1]) > 0.3
+}
+
+/**
+ * Màn hình: hiện code (màn chính) hoặc màn phụ; màn chính đổi màu liên tục như đang chiếu phim khi chủ khoang xem phim.
+ * Chủ khoang rời chỗ thì cả hai màn hình chuyển sang màn hình khoá.
+ */
 function Screen({ owner, position, side = false }: { owner: AgentDef; position: V3; side?: boolean }) {
   const movie = useRef<MeshStandardMaterial>(null)
+  const lock = useRef<Mesh>(null)
   const watching = useStore((s) => !side && owner.hobby === 'movie' && s.agents[owner.id].state === 'hobby')
   const tex = useMemo(() => (side ? sideTexture(owner) : codeTexture(owner.color)), [owner, side])
+  const lockTex = useMemo(() => lockTexture(owner), [owner])
   useFrame(({ clock }) => {
+    if (lock.current) lock.current.visible = awayFromSeat(owner)
     if (!movie.current || !watching) return
     const t = clock.elapsedTime
     movie.current.emissive.setHSL((t * 0.07) % 1, 0.7, 0.35 + Math.sin(t * 5) * 0.1)
@@ -181,6 +240,10 @@ function Screen({ owner, position, side = false }: { owner: AgentDef; position: 
       <mesh position={[0, 0, 0.001]} visible={watching}>
         <planeGeometry args={[0.55, 0.32]} />
         <meshStandardMaterial ref={movie} color="#000" emissive="#6366f1" emissiveIntensity={0.9} />
+      </mesh>
+      <mesh ref={lock} position={[0, 0, 0.002]} visible={false}>
+        <planeGeometry args={[0.55, 0.32]} />
+        <meshStandardMaterial map={lockTex} emissiveMap={lockTex} emissive="#ffffff" emissiveIntensity={0.85} roughness={0.3} />
       </mesh>
     </group>
   )
@@ -311,6 +374,27 @@ function DeskItems({ owner, x }: { owner: AgentDef; x: number }) {
   }
 }
 
+/** Chuột trên bàn: trượt theo tay khi chủ khoang đang làm việc và rê chuột (cùng nhịp với StickFigure) */
+function DeskMouse({ owner, position }: { owner: AgentDef; position: V3 }) {
+  const ref = useRef<Mesh>(null)
+  const phase = AGENTS.indexOf(owner) * 1.37 // cùng pha Agent truyền cho StickFigure
+  useFrame(({ clock }) => {
+    const m = ref.current
+    if (!m) return
+    const t = clock.elapsedTime + phase
+    const active = useStore.getState().agents[owner.id].state === 'work' && !awayFromSeat(owner) && usingMouse(t)
+    const [dx, dz] = active ? mouseOffset(t) : [0, 0]
+    m.position.x = MathUtils.lerp(m.position.x, position[0] + dx, 0.2)
+    m.position.z = MathUtils.lerp(m.position.z, position[2] + dz, 0.2)
+  })
+  return (
+    <mesh ref={ref} position={position} scale={[0.7, 0.45, 1]} castShadow>
+      <sphereGeometry args={[0.045, 14, 10]} />
+      <meshStandardMaterial color="#f1f5f9" roughness={0.4} />
+    </mesh>
+  )
+}
+
 function Workstation({ owner }: { owner: AgentDef }) {
   const x = owner.seat[0]
   return (
@@ -340,12 +424,9 @@ function Workstation({ owner }: { owner: AgentDef }) {
         </group>
       ))}
       {/* bàn phím + chuột + lót chuột */}
-      <Soft args={[0.46, 0.02, 0.15]} position={[x, 0.785, DESK_Z + 0.18]} color="#f1f5f9" radius={0.008} />
-      <Box args={[0.22, 0.004, 0.2]} position={[x + 0.36, 0.777, DESK_Z + 0.18]} color="#1e293b" />
-      <mesh position={[x + 0.36, 0.79, DESK_Z + 0.18]} scale={[0.7, 0.45, 1]} castShadow>
-        <sphereGeometry args={[0.045, 14, 10]} />
-        <meshStandardMaterial color="#f1f5f9" roughness={0.4} />
-      </mesh>
+      <Soft args={[0.46, 0.02, 0.15]} position={[x, 0.785, DESK_Z + 0.27]} color="#f1f5f9" radius={0.008} />
+      <Box args={[0.22, 0.004, 0.2]} position={[x + 0.36, 0.777, DESK_Z + 0.27]} color="#1e293b" />
+      <DeskMouse owner={owner} position={[x + 0.36, 0.79, DESK_Z + 0.27]} />
       {/* cốc cà phê có quai */}
       <group position={[x - 0.45, 0.775, DESK_Z + 0.22]}>
         <Cyl args={[0.04, 0.035, 0.1]} position={[0, 0.05, 0]} color={owner.color} roughness={0.35} />

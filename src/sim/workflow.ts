@@ -403,6 +403,8 @@ async function workLoop() {
 // ---------- lúc rảnh: chơi theo sở thích, thỉnh thoảng sang khoang nhau tán gẫu ----------
 
 const IDLE_TICK_MS = 12_000
+/** Lúc rảnh có rủ nhau sang khoang tán gẫu không (tạm tắt: chỉ ngồi chơi và lẩm bẩm về sở thích) */
+const IDLE_CHAT = false
 const isRelaxing = (id: Role) => S().agents[id].state === 'hobby' && !S().agents[id].bubble
 const isIdle = (id: Role) => !locked.has(id) && isRelaxing(id)
 
@@ -442,7 +444,7 @@ function startIdleLife() {
     const idle = AGENTS.map((a) => a.id).filter(isIdle)
     // Sếp vừa giao việc hoặc đang có việc chung: đừng rủ nhau đi tán gẫu
     const workPending = gathering || teamTaskActive || queue.length > 0
-    if (!workPending && idle.length >= 2 && chance(0.35)) {
+    if (IDLE_CHAT && !workPending && idle.length >= 2 && chance(0.35)) {
       const from = pick(idle)
       void smallTalk(from, pick(idle.filter((id) => id !== from)))
     } else if (idle.length > 0 && chance(0.6)) {

@@ -107,7 +107,7 @@ Phần CLI và model lấy từ `GET /api/agent?role=BE`, tự làm mới mỗi 
 
 ## Lúc rảnh
 
-Agent không giữ task nào thì ngồi chơi theo sở thích: Lan đọc sách 📖, Minh chơi game 🎮, Khoa nghe nhạc 🎧, Hà xem phim 🍿, Tú xoay rubik 🧩. Thỉnh thoảng một người rảnh sang khoang người rảnh khác tán gẫu (3 câu, ghi vào file riêng của hai người). Lẩm bẩm về sở thích chỉ là câu có sẵn, không gọi Claude.
+Agent không giữ task nào thì ngồi chơi theo sở thích: Lan đọc sách 📖, Minh chơi game 🎮, Khoa nghe nhạc 🎧, Hà xem phim 🍿, Tú xoay rubik 🧩. Tán gẫu lúc rảnh (một người sang khoang người khác nói 3 câu) đang tạm tắt; bật lại bằng `IDLE_CHAT = true` trong `src/sim/workflow.ts`. Lẩm bẩm về sở thích chỉ là câu có sẵn, không gọi Claude.
 
 Vẫn có thể nhắn và giao việc bằng cách viết tay vào `office/inbox.md` (`@FE ...`, `giao @team ...`, `reset @BE`); tin nhắn đó hiện trong cửa sổ chat như tin gửi từ giao diện.
 

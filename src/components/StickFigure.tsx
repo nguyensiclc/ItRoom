@@ -353,6 +353,12 @@ interface Props {
 
 type Mood = 'speak' | 'think' | 'quiet'
 
+/** Đang rê chuột (khoảng 2,4 giây trong mỗi 7 giây làm việc); t = thời gian + pha của agent, dùng chung với con chuột trên bàn */
+export const usingMouse = (t: number) => t % 7 > 4.6
+
+/** Vị trí rê chuột lệch khỏi chỗ đặt chuột, khớp với nhịp tay trong tư thế làm việc */
+export const mouseOffset = (t: number): [number, number] => [Math.sin(t * 2.6) * 0.025, Math.cos(t * 2.6) * 0.02]
+
 /** Tư thế tay: [rotX, rotZ] cánh tay trái/phải, rotX cẳng tay, gật đầu hx, nghiêng đầu hy */
 interface ArmPose {
   la: number[]
@@ -449,15 +455,25 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
         bob = Math.abs(Math.sin(t * 9)) * 0.04
         break
       }
-      case 'work': // ngồi gõ phím
+      case 'work': { // ngồi gõ phím, thỉnh thoảng đưa tay sang rê chuột
         lt = rt = -Math.PI / 2
         ls = rs = Math.PI / 2
-        la = [-0.9, 0.1]
-        ra = [-0.9, -0.1]
-        lf = -0.7 + Math.sin(t * 22) * 0.08
-        rf = -0.7 + Math.sin(t * 22 + 1.7) * 0.08
+        // gõ phím: hai tay nhịp lệch nhau, thỉnh thoảng dừng tay một chút như đang nghĩ
+        const burst = Math.sin(t * 0.9) > -0.6 ? 1 : 0.15
+        la = [-1.2, 0.12]
+        ra = [-1.2, -0.12]
+        lf = -0.4 + Math.sin(t * 22) * 0.09 * burst
+        rf = -0.4 + Math.sin(t * 19 + 1.7) * 0.09 * burst
         hx = 0.12 + Math.sin(t * 0.7) * 0.05
+        if (usingMouse(t)) {
+          // ngồi quay vào bàn thì tay trái của mô hình nằm phía chuột (bên phải người ngồi): dang ra, rê nhẹ theo vòng
+          la = [-1.05 + Math.cos(t * 2.6) * 0.05, -0.43 + Math.sin(t * 2.6) * 0.06]
+          lf = -0.45
+          rf = -0.45
+          hy = -0.08
+        }
         break
+      }
       case 'hobby': {
         lt = rt = -Math.PI / 2
         ls = rs = Math.PI / 2
@@ -530,7 +546,11 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
     }
     // chớp mắt vài giây một lần
     if (eyes.current) eyes.current.scale.y = (t * 0.27) % 1 < 0.035 ? 0.1 : 1
-    if (body.current) body.current.position.y = -SIT_DROP * sit.current + bob
+    if (body.current) {
+      body.current.position.y = -SIT_DROP * sit.current + bob
+      // ngồi làm việc thì nhích người về phía bàn để tay chạm bàn phím, chuột
+      body.current.position.z = MathUtils.lerp(body.current.position.z, pose === 'work' ? 0.12 : 0, k)
+    }
 
     // Đồ vật bám theo bàn tay: chỉ hiện khi đã ngồi hẳn xuống để chơi
     const p = prop.current
