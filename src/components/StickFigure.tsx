@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { MathUtils, type Group } from 'three'
 import type { Hobby, Role } from '../data/agents'
 import type { AnimState } from '../store'
+import { motions } from '../sim/motion'
 
 const UPPER_ARM = 0.3
 const FOREARM = 0.26
@@ -365,7 +366,9 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime + phase
     const k = 1 - Math.exp(-12 * dt)
-    const seated = state === 'work' || state === 'listen' || state === 'hobby'
+    // Đang có lộ trình thì luôn bước đi, kể cả khi trạng thái đã đổi sang ngồi (không ngồi mà trượt)
+    const pose: AnimState = motions[role] ? 'walk' : state
+    const seated = pose === 'work' || pose === 'listen' || pose === 'hobby'
     sit.current = MathUtils.lerp(sit.current, seated ? 1 : 0, k)
 
     // Tư thế mục tiêu: [rotX, rotZ] cho tay/chân, [rotX, rotY] cho đầu
@@ -373,7 +376,7 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
     let lt = 0, ls = 0, rt = 0, rs = 0
     let hx = 0, hy = 0, bob = 0
 
-    switch (state) {
+    switch (pose) {
       case 'walk': {
         const s = Math.sin(t * 9)
         lt = s * 0.6

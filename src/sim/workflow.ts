@@ -3,7 +3,7 @@ import {
   type DevRole, type Role,
 } from '../data/agents'
 import { useStore, type Area, type Stage } from '../store'
-import { walkPath, walkTo } from './motion'
+import { motions, walkPath, walkTo } from './motion'
 import { aiLine, markAssignmentDone, startAssignmentPolling, startEventPolling, startStatusSync, type Assignment, type Channel, type Kind } from './ai'
 
 // Agent chỉ làm việc khi sếp giao (qua office/inbox.md hoặc ô giao việc trên giao diện):
@@ -64,6 +64,11 @@ function settle(id: Role) {
   }
 }
 
+/** Chờ agent đi hết lộ trình đang dở (nếu có) */
+async function arrived(id: Role) {
+  while (motions[id]) await new Promise((r) => setTimeout(r, 100))
+}
+
 /** Về chỗ ngồi; không cần await nếu muốn agent khác làm tiếp ngay */
 async function goHome(id: Role) {
   const [x, z] = agentById(id).seat
@@ -83,7 +88,8 @@ async function visit(from: Role, to: Role, line: Exchange, reply: Exchange) {
   await withAgents([from, to], async () => {
     const [x, z] = agentById(to).seat
     S().setAgent(from, { state: 'walk' })
-    await walkTo(from, x + 0.8, z + 0.4, [x, z])
+    // `to` có thể vẫn đang đi về khoang (goHome không await): chờ ngồi xuống rồi mới chuyển sang nghe
+    await Promise.all([walkTo(from, x + 0.8, z + 0.4, [x, z]), arrived(to)])
     S().setAgent(from, { state: 'talk' })
     S().setAgent(to, { state: 'listen' })
     await talk(from, `Bạn đang đứng ở khoang của ${agentById(to).name} (${to}). ${line.situation}`, line.fallback, undefined, to)
