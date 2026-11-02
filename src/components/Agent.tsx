@@ -95,12 +95,12 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
       )}
 
       {labelReady && (
-        <Html position={[0, 2.05, 0]} center distanceFactor={9} zIndexRange={[10, 0]} pointerEvents="none">
+        <Html position={[0, runtime.state === 'sleep' ? 1.6 : 2.05, 0]} center distanceFactor={9} zIndexRange={[10, 0]} pointerEvents="none">
           <div className="tag">
             {runtime.chat && <div className="bubble chat">{runtime.chat}</div>}
             {runtime.bubble && <div className="bubble">{runtime.bubble}</div>}
             <div className="name" style={{ background: def.color }}>
-              {runtime.state === 'hobby' && `${HOBBIES[def.hobby].emoji} `}
+              {runtime.state === 'sleep' ? '💤 ' : runtime.state === 'hobby' ? `${HOBBIES[def.hobby].emoji} ` : ''}
               {def.id} · {def.name}
             </div>
           </div>

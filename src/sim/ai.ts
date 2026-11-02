@@ -1,5 +1,20 @@
-import { AGENTS, HOBBIES, type Role } from '../data/agents'
+import { AGENTS, agentById, HOBBIES, type Role } from '../data/agents'
 import { useStore } from '../store'
+import { motions, positions } from './motion'
+
+export function isOutOfTokens(err: string): boolean {
+  return /quota|token|credit|rate_limit|resource_exhausted|429|overloaded|usage limit|hết quota|insufficient/i.test(err)
+}
+
+/** Đặt agent vào trạng thái ngủ tại ghế khi hết token/quota hoặc lỗi gọi CLI */
+export function putAgentToSleep(role: Role, reason = 'Hết token rồi... ngủ tí đã!') {
+  const { setAgent, pushLog } = useStore.getState()
+  setAgent(role, { state: 'sleep', bubble: `💤 ${reason} zZz...` })
+  pushLog(role, `💤 ${agentById(role).name} gục xuống ghế ngủ khò khò... (${reason})`)
+  const def = agentById(role)
+  positions[role].set(def.seat[0], 0, def.seat[1])
+  delete motions[role]
+}
 
 const RETRY_AFTER_MS = 30_000
 const TIMEOUT_MS = 95_000 // một lần `claude -p` mất vài giây, đôi khi lâu hơn
@@ -75,7 +90,13 @@ export async function aiLine(role: Role, situation: string, fallback: Line, chan
       body: JSON.stringify({ role, situation, channel, kind }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { outOfTokens?: boolean; error?: string; details?: string }
+      if (err?.outOfTokens || isOutOfTokens(err?.details || err?.error || '')) {
+        putAgentToSleep(role)
+      }
+      throw new Error(`HTTP ${res.status}`)
+    }
     const line = (await res.json()) as Line
     if (!line.text) throw new Error('empty')
     setAi({ aiStatus: 'online' })
@@ -166,7 +187,10 @@ export function startEventPolling() {
               pushLog(e.role, `↩ ${where}${e.text}`)
               showChat(e.role, e.text, 6000 + e.text.length * 60)
             }
-            if (e.type === 'error') showChat(e.role, `⚠️ ${e.text}`, 4000)
+            if (e.type === 'error') {
+              showChat(e.role, `⚠️ ${e.text}`, 5000)
+              putAgentToSleep(e.role, e.text)
+            }
           }
         }
         since = last
@@ -264,6 +288,18 @@ export function startProjectPolling() {
 /** Đang làm việc thật: có dự án, server chạy và đang bật Claude AI */
 export const realMode = () => !!project && useStore.getState().aiEnabled
 
+/** Thông tin dự án hiện tại */
+export const currentProject = () => project
+
+/** PM tự khởi tạo dự án mới trong ROOT/projects/<slug> */
+export async function initProjectApi(name: string, description?: string) {
+  const res = await api<{ ok: boolean; dir: string; base: string; slug: string; relativePath: string }>('/api/project/init', { name, description })
+  if (res.data?.ok && res.data.dir) {
+    project = { dir: res.data.dir, base: res.data.base ?? 'main' }
+  }
+  return res.data
+}
+
 export interface WorkResult {
   summary: string
   verdict: 'done' | 'pass' | 'fail'
@@ -294,7 +330,13 @@ export async function realWork(w: WorkRequest): Promise<WorkResult | null> {
       body: JSON.stringify(w),
       signal: AbortSignal.timeout(30 * 60_000),
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { outOfTokens?: boolean; error?: string }
+      if (err?.outOfTokens || isOutOfTokens(err?.error || '')) {
+        putAgentToSleep(w.role, 'Hết token khi đang code')
+      }
+      return null
+    }
     return (await res.json()) as WorkResult
   } catch {
     return null

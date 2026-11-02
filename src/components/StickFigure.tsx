@@ -413,6 +413,7 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
   const body = useRef<Group>(null)
   const head = useRef<Group>(null)
   const eyes = useRef<Group>(null)
+  const torso = useRef<Group>(null)
   const lArm = useRef<Group>(null)
   const lFore = useRef<Group>(null)
   const rArm = useRef<Group>(null)
@@ -434,7 +435,7 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
     const k = 1 - Math.exp(-12 * dt)
     // Đang có lộ trình thì luôn bước đi, kể cả khi trạng thái đã đổi sang ngồi (không ngồi mà trượt)
     const pose: AnimState = motions[role] ? 'walk' : state
-    const seated = pose === 'work' || pose === 'listen' || pose === 'hobby'
+    const seated = pose === 'work' || pose === 'listen' || pose === 'hobby' || pose === 'sleep'
     sit.current = MathUtils.lerp(sit.current, seated ? 1 : 0, k)
 
     // Tư thế mục tiêu: [rotX, rotZ] cho tay/chân, [rotX, rotY] cho đầu
@@ -514,6 +515,20 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
         }
         break
       }
+      case 'sleep': { // ngủ gục trên bàn làm việc: khoanh hai tay làm gối trên mặt bàn, đầu gục xuống
+        lt = rt = -Math.PI / 2
+        ls = rs = Math.PI / 2
+        // vươn hai tay ra đặt ngang trên mặt bàn đan chéo vào nhau
+        la = [-1.35, 0.55]
+        ra = [-1.35, -0.55]
+        lf = -1.35
+        rf = -1.35
+        // đầu gục hẳn xuống tỳ lên hai cánh tay, nghiêng một bên
+        hx = 0.52 + Math.sin(t * 1.5) * 0.03
+        hy = 0.42
+        bob = Math.sin(t * 1.5) * 0.015 // nhịp thở đều đặn khi ngủ
+        break
+      }
       case 'listen': // ngồi trên ghế đã xoay về phía khách
       case 'talk': // đứng nói chuyện
       case 'idle': { // đứng ở bàn họp
@@ -544,12 +559,17 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
       lerpX(head.current, hx)
       head.current.rotation.y = MathUtils.lerp(head.current.rotation.y, hy, k)
     }
-    // chớp mắt vài giây một lần
-    if (eyes.current) eyes.current.scale.y = (t * 0.27) % 1 < 0.035 ? 0.1 : 1
+    const isSleeping = pose === 'sleep'
+    if (torso.current) {
+      torso.current.rotation.x = MathUtils.lerp(torso.current.rotation.x, isSleeping ? 0.62 : 0, k)
+    }
+    // chớp mắt vài giây một lần; khi ngủ thì nhắm mắt hoàn toàn
+    if (eyes.current) eyes.current.scale.y = isSleeping ? 0.06 : (t * 0.27) % 1 < 0.035 ? 0.1 : 1
     if (body.current) {
-      body.current.position.y = -SIT_DROP * sit.current + bob
-      // ngồi làm việc thì nhích người về phía bàn để tay chạm bàn phím, chuột
-      body.current.position.z = MathUtils.lerp(body.current.position.z, pose === 'work' ? 0.12 : 0, k)
+      body.current.position.y = -SIT_DROP * sit.current - (isSleeping ? 0.08 : 0) + bob
+      // ngồi làm việc thì nhích người về phía bàn; ngủ thì nhích sát mặt bàn hơn để gối đầu lên bàn
+      const targetZ = isSleeping ? 0.24 : pose === 'work' ? 0.12 : 0
+      body.current.position.z = MathUtils.lerp(body.current.position.z, targetZ, k)
     }
 
     // Đồ vật bám theo bàn tay: chỉ hiện khi đã ngồi hẳn xuống để chơi
@@ -598,44 +618,49 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
   return (
     <group ref={body}>
       <group ref={hip} position={[0, HIP_Y, 0]}>
-        {/* thân áo */}
-        <mesh position={[0, 0.32, 0]} scale={[1, 1, 0.82]} castShadow>
-          <capsuleGeometry args={[0.13, 0.27, 8, 20]} />
-          <meshStandardMaterial color={color} roughness={0.8} />
-        </mesh>
         {/* hông quần */}
         <mesh position={[0, 0.03, 0]} scale={[1, 0.7, 0.8]} castShadow>
           <sphereGeometry args={[0.135, 18, 12]} />
           <meshStandardMaterial color={look.pants} roughness={0.8} />
         </mesh>
-        {/* cổ */}
-        <mesh position={[0, 0.6, 0]}>
-          <cylinderGeometry args={[0.045, 0.05, 0.08, 12]} />
-          <meshStandardMaterial color={look.skin} roughness={0.7} />
-        </mesh>
-        <Outfit role={role} color={color} />
 
-        {/* đầu */}
-        <group ref={head} position={[0, 0.78, 0]}>
-          <group scale={HEAD_SCALE}>
-            <mesh castShadow>
-              <sphereGeometry args={[0.14, 32, 20]} />
-              <meshStandardMaterial color={look.skin} roughness={0.65} />
-            </mesh>
-            <Face eyes={eyes} skin={look.skin} />
-            <Hair style={look.style} color={look.hair} />
-            <HeadAccessory role={role} />
+        {/* thân trên: xoay gập về phía trước khi ngủ */}
+        <group ref={torso}>
+          {/* thân áo */}
+          <mesh position={[0, 0.32, 0]} scale={[1, 1, 0.82]} castShadow>
+            <capsuleGeometry args={[0.13, 0.27, 8, 20]} />
+            <meshStandardMaterial color={color} roughness={0.8} />
+          </mesh>
+          {/* cổ */}
+          <mesh position={[0, 0.6, 0]}>
+            <cylinderGeometry args={[0.045, 0.05, 0.08, 12]} />
+            <meshStandardMaterial color={look.skin} roughness={0.7} />
+          </mesh>
+          <Outfit role={role} color={color} />
+
+          {/* đầu */}
+          <group ref={head} position={[0, 0.78, 0]}>
+            <group scale={HEAD_SCALE}>
+              <mesh castShadow>
+                <sphereGeometry args={[0.14, 32, 20]} />
+                <meshStandardMaterial color={look.skin} roughness={0.65} />
+              </mesh>
+              <Face eyes={eyes} skin={look.skin} />
+              <Hair style={look.style} color={look.hair} />
+              <HeadAccessory role={role} />
+            </group>
           </group>
+
+          {state === 'hobby' && (
+            <group ref={prop} visible={false}>
+              <HobbyProp hobby={hobby} spin={spin} />
+            </group>
+          )}
+
+          {arm(lArm, lFore, -1)}
+          {arm(rArm, rFore, 1)}
         </group>
 
-        {state === 'hobby' && (
-          <group ref={prop} visible={false}>
-            <HobbyProp hobby={hobby} spin={spin} />
-          </group>
-        )}
-
-        {arm(lArm, lFore, -1)}
-        {arm(rArm, rFore, 1)}
         {leg(lThigh, lShin, -1)}
         {leg(rThigh, rShin, 1)}
       </group>

@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import type { Role } from './data/agents'
 
-/** work: ngồi làm việc · hobby: ngồi chơi khi rảnh · listen: ngồi nghe khách · idle: đứng (họp) */
-export type AnimState = 'work' | 'hobby' | 'listen' | 'walk' | 'talk' | 'idle'
+/** work: ngồi làm việc · hobby: ngồi chơi khi rảnh · listen: ngồi nghe khách · idle: đứng (họp) · sleep: ngủ tại ghế khi hết token */
+export type AnimState = 'work' | 'hobby' | 'listen' | 'walk' | 'talk' | 'idle' | 'sleep'
 export type Stage = 'todo' | 'meeting' | 'dev' | 'review' | 'test' | 'done'
 
 /** Phần việc của task: chỉ backend, chỉ frontend, hay cả hai */

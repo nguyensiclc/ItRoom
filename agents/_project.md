@@ -1,6 +1,6 @@
 ---
-mô_tả: Dự án thật mà agent làm việc. Server đọc lại file này mỗi lần làm việc, sửa xong là có hiệu lực ngay.
-path: D:\Projects\my-app
+mô_tả: Dự án thật mà agent làm việc. Khi sếp giao dự án mới, PM Lan sẽ tự khởi tạo folder trong projects/ và tự điền vào đây.
+path: 
 base_branch: main
 code_model: sonnet
 ---

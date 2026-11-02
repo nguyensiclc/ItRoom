@@ -655,14 +655,30 @@ function speak(role: Role, situation: string, channel?: Channel, kind: Kind = 'w
 // ---------- làm việc thật trên thư mục dự án (agents/_project.md) ----------
 
 const PROJECT_FILE = path.join(AGENTS_DIR, '_project.md')
+const PROJECTS_DIR = path.join(ROOT, 'projects')
 const WORK_TIMEOUT_MS = 25 * 60_000
 
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || `project-${Date.now().toString(36)}`
+}
+
 /** Thư mục dự án và branch chính; null = chưa cấu hình (chạy mô phỏng) */
+function isOutOfTokens(err: string): boolean {
+  return /quota|token|credit|rate_limit|resource_exhausted|429|overloaded|usage limit|hết quota|insufficient/i.test(err)
+}
+
 function projectConfig() {
   const dir = process.env.PROJECT_DIR ?? frontmatter(PROJECT_FILE, 'path')
   if (!dir) return null
   const base = frontmatter(PROJECT_FILE, 'base_branch') ?? 'main'
-  return { dir: path.resolve(dir), base: /^[\w./-]+$/.test(base) ? base : 'main' }
+  return { dir: path.resolve(ROOT, dir), base: /^[\w./-]+$/.test(base) ? base : 'main' }
 }
 
 function git(cwd: string, args: string[]): Promise<{ code: number; out: string }> {
@@ -678,10 +694,44 @@ function git(cwd: string, args: string[]): Promise<{ code: number; out: string }
   })
 }
 
-/** Tạo thư mục dự án và repo git (commit đầu tiên trên branch chính) nếu chưa có */
+/** Tự động khởi tạo thư mục dự án mới trong ROOT/projects/<slug> do PM Lan chủ trì */
+async function initProject(name: string, description?: string) {
+  const slug = slugify(name)
+  const dir = path.join(PROJECTS_DIR, slug)
+  fs.mkdirSync(dir, { recursive: true })
+  const base = frontmatter(PROJECT_FILE, 'base_branch') ?? 'main'
+
+  if (!fs.existsSync(path.join(dir, '.git'))) {
+    await git(dir, ['init', '-b', base])
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\ndist/\n.env\n*.log\n')
+    const desc = description ? `\n\n${description}` : ''
+    fs.writeFileSync(path.join(dir, 'README.md'), `# ${name}\n\nDự án do team IT Room khởi tạo và phát triển.${desc}\n`)
+    await git(dir, ['add', '-A'])
+    await git(dir, ['commit', '-m', `Khởi tạo dự án: ${name}`])
+    console.log(`[dự án] PM đã khởi tạo dự án mới: ${dir}`)
+  }
+
+  // Tự động cập nhật path trong agents/_project.md (relative path từ ROOT)
+  const relativePath = path.relative(ROOT, dir).replace(/\\/g, '/')
+  const currentContent = fs.readFileSync(PROJECT_FILE, 'utf8')
+  let updatedContent = currentContent
+  if (/^path:/m.test(updatedContent)) {
+    updatedContent = updatedContent.replace(/^path:.*$/m, `path: ${relativePath}`)
+  } else {
+    updatedContent = updatedContent.replace(/^---\r?\n/, `---\npath: ${relativePath}\n`)
+  }
+  fs.writeFileSync(PROJECT_FILE, updatedContent)
+
+  return { dir, base, slug, relativePath }
+}
+
+/** Tạo thư mục dự án và repo git nếu chưa có */
 async function ensureProject() {
-  const p = projectConfig()
-  if (!p) return null
+  let p = projectConfig()
+  if (!p) {
+    const init = await initProject('app-du-an', 'Dự án khởi tạo tự động')
+    p = { dir: init.dir, base: init.base }
+  }
   fs.mkdirSync(p.dir, { recursive: true })
   if (!fs.existsSync(path.join(p.dir, '.git'))) {
     await git(p.dir, ['init', '-b', p.base])
@@ -901,8 +951,9 @@ async function answerBoss(role: Role, message: string) {
     const { text } = await speak(role, `Sếp vừa nhắn cho bạn: "${message}". Trả lời sếp.`, 'boss', 'boss')
     emit('reply', role, text)
   } catch (e) {
-    console.error((e as Error).message)
-    emit('error', role, 'Không gọi được Claude CLI')
+    const msg = (e as Error).message
+    console.error(msg)
+    emit('error', role, isOutOfTokens(msg) ? 'Hết token / quota rồi... zZz' : 'Không gọi được CLI (hết token / lỗi kết nối)')
   }
 }
 
@@ -1015,8 +1066,9 @@ function sendChat(chat: string, text: string, task = false): string | null {
         const { text: reply } = await speak(role, situation, channel, 'boss')
         emit('reply', role, reply, name)
       } catch (e) {
-        console.error((e as Error).message)
-        emit('error', role, 'Không gọi được CLI')
+        const msg = (e as Error).message
+        console.error(msg)
+        emit('error', role, isOutOfTokens(msg) ? 'Hết token / quota rồi... zZz' : 'Không gọi được CLI (hết token / lỗi kết nối)')
       } finally {
         setTyping(chat, role, false)
       }
@@ -1308,6 +1360,19 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, p ? { enabled: true, dir: p.dir, base: p.base } : { enabled: false })
   }
 
+  // Khởi tạo dự án mới trong ROOT/projects/<slug> do PM Lan chủ trì
+  if (req.method === 'POST' && url.pathname === '/api/project/init') {
+    const body = await readJson(req)
+    const name = typeof body?.name === 'string' ? body.name.trim() : 'du-an-moi'
+    const desc = typeof body?.description === 'string' ? body.description.trim() : undefined
+    try {
+      const resProj = await initProject(name, desc)
+      return send(res, 200, { ok: true, ...resProj })
+    } catch (e) {
+      return send(res, 500, { error: (e as Error).message })
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/work') {
     const body = await readJson(req)
     const role = typeof body?.role === 'string' ? toRole(body.role) : undefined
@@ -1325,8 +1390,10 @@ const server = http.createServer(async (req, res) => {
       })
       return send(res, 200, result)
     } catch (e) {
-      console.error((e as Error).message)
-      return send(res, 502, { error: (e as Error).message.slice(0, 300) })
+      const msg = (e as Error).message
+      console.error(msg)
+      const outOfTokens = isOutOfTokens(msg)
+      return send(res, 502, { error: msg.slice(0, 300), outOfTokens })
     }
   }
 
@@ -1397,8 +1464,10 @@ const server = http.createServer(async (req, res) => {
     try {
       return send(res, 200, await speak(role, situation, channel, kind))
     } catch (e) {
-      console.error((e as Error).message)
-      return send(res, 502, { error: 'claude_cli_failed' })
+      const msg = (e as Error).message
+      console.error(msg)
+      const outOfTokens = isOutOfTokens(msg)
+      return send(res, 502, { error: 'claude_cli_failed', details: msg, outOfTokens })
     }
   }
 

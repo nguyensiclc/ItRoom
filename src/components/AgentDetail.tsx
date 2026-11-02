@@ -10,6 +10,7 @@ const STATE_LABEL: Record<AnimState, string> = {
   walk: 'Đang di chuyển',
   talk: 'Đang trao đổi',
   idle: 'Đứng họp',
+  sleep: '💤 Đang ngủ (hết token)',
 }
 
 const STAGE_LABEL = { todo: 'chưa bắt đầu', meeting: 'đang họp', dev: 'đang làm', review: 'review', test: 'testing', done: 'xong' }
@@ -60,6 +61,25 @@ export function AgentDetail({ role }: { role: Role }) {
           </strong>
           <small>{detail?.title ?? def.title}</small>
         </div>
+        {runtime.state === 'sleep' ? (
+          <button
+            className="dm"
+            style={{ background: '#f59e0b', color: '#000' }}
+            onClick={() => useStore.getState().setAgent(role, { state: 'hobby', bubble: null })}
+            title="Đánh thức agent dậy làm việc/chơi"
+          >
+            ⏰ Đánh thức
+          </button>
+        ) : (
+          <button
+            className="dm"
+            style={{ opacity: 0.85 }}
+            onClick={() => useStore.getState().setAgent(role, { state: 'sleep', bubble: '💤 Hết token... ngủ tí đã! zZz' })}
+            title="Cho agent ngủ tại ghế (thử nghiệm hết token)"
+          >
+            💤 Ngủ
+          </button>
+        )}
         <button className="dm" onClick={() => useStore.getState().openChat(`dm:${role}`)} title={`Nhắn riêng cho ${def.name}`}>
           💬 Nhắn
         </button>

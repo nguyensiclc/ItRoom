@@ -5,7 +5,7 @@ import {
 import { useStore, type Area, type Stage } from '../store'
 import { faceTo, fromAisle, motions, toAisle, walkPath, walkTo } from './motion'
 import {
-  aiLine, markAssignmentDone, realMode, realWork, startAssignmentPolling, startEventPolling, startNamePolling, startProjectPolling, startStatusSync,
+  aiLine, currentProject, initProjectApi, markAssignmentDone, realMode, realWork, startAssignmentPolling, startEventPolling, startNamePolling, startProjectPolling, startStatusSync,
   type Assignment, type Channel, type Kind, type WorkRequest, type WorkResult,
 } from './ai'
 
@@ -64,6 +64,7 @@ async function withAgents<T>(ids: Role[], fn: () => Promise<T>): Promise<T> {
 /** Đang ngồi ở khoang: có task thì làm việc, không thì chơi theo sở thích */
 function settle(id: Role) {
   const a = S().agents[id]
+  if (a.state === 'sleep') return
   if (a.state === 'work' || a.state === 'hobby' || a.state === 'listen') {
     S().setAgent(id, { state: a.taskId !== null ? 'work' : 'hobby' })
   }
@@ -181,6 +182,19 @@ async function teamMeeting(taskId: number, request: string): Promise<{ title: st
     S().updateTask(taskId, { title, area })
     await say('PM', opening.text)
     S().setAgent('PM', { state: 'idle' })
+
+    // PM Lan tự động khởi tạo thư mục dự án mới trong ROOT/projects/<slug> nếu chưa có hoặc khi sếp giao dự án mới
+    const isNewProject = !currentProject() || /dự án mới|project mới|khởi tạo|tạo dự án|tạo app|xây dựng/i.test(request)
+    if (isNewProject && S().aiEnabled) {
+      try {
+        const init = await initProjectApi(title, request)
+        if (init?.slug) {
+          await say('PM', `Em đã khởi tạo repo dự án tại projects/${init.slug} rồi nhé cả team! 🚀`, 2600)
+        }
+      } catch (err) {
+        console.warn('[PM] Khởi tạo dự án tự động lỗi:', err)
+      }
+    }
 
     const ctx = `Đang họp ở bàn họp. ${brief} PM đặt tên task "${title}", phần việc: ${AREA_LABEL[area]}.`
     const speak = async (id: Role, situation: string, fallback: string) => {
@@ -354,6 +368,15 @@ async function runPersonalTask(taskId: number, who: Role, request: string) {
     if (ack.title) S().updateTask(taskId, { title: ack.title })
     const title = ack.title || request
     await say(who, ack.text)
+
+    // Nếu chưa có dự án thật, tự động khởi tạo trong root/projects/
+    if (!currentProject() && S().aiEnabled) {
+      try {
+        await initProjectApi(title, request)
+      } catch (err) {
+        console.warn('Tự khởi tạo dự án lỗi:', err)
+      }
+    }
 
     // Dự án thật: làm thật trên branch riêng, xong thì merge; mô phỏng: lẩm bẩm vài câu
     const r = await work(who, taskId, 'personal', '', true)
