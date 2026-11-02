@@ -912,21 +912,6 @@ function agentDetail(role: Role) {
   const engine = engineOf(role)
   const s = sessions[role]
   const w = workers.get(role)
-  const channels = (fs.existsSync(CHANNEL_DIR) ? fs.readdirSync(CHANNEL_DIR) : [])
-    .filter((n) => {
-      if (n.startsWith('Nhom-')) return !!groupById(n.slice(5, -3))?.members.includes(role)
-      return n === 'team.md' || n === `Sep-${role}.md` || n.replace(/\.md$/, '').split('-').includes(role)
-    })
-    .map((n) => {
-      const label = n.startsWith('Nhom-') ? `Nhóm ${groupById(n.slice(5, -3))?.name}` : undefined
-      const all = messages(path.join(CHANNEL_DIR, n))
-      const recent = all.slice(-3).map((l) => {
-        const m = l.match(/^- (\S+) \*\*(.+?):\*\* (.*)$/)
-        return m ? { time: m[1], who: m[2], text: m[3] } : { time: '', who: '', text: l.slice(2) }
-      })
-      const unreadCount = s ? Math.max(0, all.length - (s.seen[n] ?? 0)) : 0
-      return { name: n, label, count: all.length, unread: unreadCount, recent }
-    })
   return {
     role,
     name: NAMES[role],
@@ -945,7 +930,6 @@ function agentDetail(role: Role) {
       : null,
     worker: engine === 'agy' ? { alive: !!w?.alive, model: w?.model ?? null } : null,
     status: statuses[role] ?? null,
-    channels,
   }
 }
 

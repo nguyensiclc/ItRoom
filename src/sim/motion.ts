@@ -46,3 +46,14 @@ export function fromAisle(x: number, z: number): [number, number][] {
 export function walkTo(id: Role, x: number, z: number, faceTo?: [number, number]): Promise<void> {
   return walkPath(id, [...toAisle(id), ...fromAisle(x, z)], faceTo)
 }
+
+/** Hướng cần quay mặt tới khi đứng/ngồi yên (vd chủ khoang xoay ghế nhìn khách); Agent đọc rồi xoá */
+export const facing: Partial<Record<Role, Vector3>> = {}
+
+/** Quay mặt về phía điểm [x, z] mà không đi */
+export function faceTo(id: Role, x: number, z: number) {
+  facing[id] = new Vector3(x, 0, z)
+}
+
+/** Góc quay hiện tại của từng agent, để ghế xoay theo người ngồi */
+export const yaws = Object.fromEntries(AGENTS.map((a) => [a.id, Math.PI])) as Record<Role, number>

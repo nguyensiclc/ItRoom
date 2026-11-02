@@ -1,5 +1,5 @@
-import { AGENTS, agentById, HOBBIES } from '../data/agents'
-import { useStore, type AnimState, type Stage, type Task } from '../store'
+import { agentById } from '../data/agents'
+import { useStore, type Stage, type Task } from '../store'
 import { resetAiBackoff } from '../sim/ai'
 import { AgentDetail } from './AgentDetail'
 import { ChatLauncher, TeamsChat } from './TeamsChat'
@@ -20,17 +20,6 @@ function TaskBadge({ task }: { task: Task }) {
   return <span className={`area ${task.area}`}>{task.area === 'FULLSTACK' ? 'FS' : task.area}</span>
 }
 
-const STATE_LABEL: Record<AnimState, string> = {
-  work: 'Đang làm việc',
-  hobby: 'Đang rảnh',
-  listen: 'Đang nghe',
-  walk: 'Đang di chuyển',
-  talk: 'Đang trao đổi',
-  idle: 'Rảnh',
-}
-
-const SPEEDS = [1, 2, 4]
-
 const AI_LABEL = { unknown: 'Claude AI', online: 'Claude AI', offline: 'AI offline' }
 const AI_HINT = {
   unknown: 'Đang chờ lượt thoại đầu tiên từ Claude',
@@ -40,12 +29,8 @@ const AI_HINT = {
 }
 
 export function Hud() {
-  const agents = useStore((s) => s.agents)
   const tasks = useStore((s) => s.tasks)
   const selected = useStore((s) => s.selected)
-  const speed = useStore((s) => s.speed)
-  const select = useStore((s) => s.select)
-  const setSpeed = useStore((s) => s.setSpeed)
   const aiEnabled = useStore((s) => s.aiEnabled)
   const aiStatus = useStore((s) => s.aiStatus)
   const setAi = useStore((s) => s.setAi)
@@ -54,13 +39,6 @@ export function Hud() {
     <div className="hud">
       <header className="panel top">
         <h1>🏢 IT Room</h1>
-        <div className="speed">
-          {SPEEDS.map((s) => (
-            <button key={s} className={s === speed ? 'on' : ''} onClick={() => setSpeed(s)}>
-              {s}x
-            </button>
-          ))}
-        </div>
         <button
           className={`ai ${aiEnabled ? aiStatus : 'off'}`}
           title={AI_HINT[aiEnabled ? aiStatus : 'off']}
@@ -99,26 +77,6 @@ export function Hud() {
 
       {selected && <AgentDetail key={selected} role={selected} />}
       <TeamsChat />
-
-      <section className="agents">
-        {AGENTS.map((a) => {
-          const r = agents[a.id]
-          return (
-            <button
-              key={a.id}
-              className={`panel agent ${selected === a.id ? 'sel' : ''}`}
-              style={{ borderColor: a.color }}
-              onClick={() => select(selected === a.id ? null : a.id)}
-            >
-              <strong style={{ color: a.color }}>{a.id}</strong> {a.name}
-              <small>{a.title}</small>
-              <span className="state">
-                {r.state === 'hobby' ? `${HOBBIES[a.hobby].emoji} ${HOBBIES[a.hobby].label}` : STATE_LABEL[r.state]}
-              </span>
-            </button>
-          )
-        })}
-      </section>
     </div>
   )
 }

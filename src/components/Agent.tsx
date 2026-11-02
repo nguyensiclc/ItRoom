@@ -4,7 +4,7 @@ import { Html } from '@react-three/drei'
 import { MathUtils, type Group } from 'three'
 import { HOBBIES, type AgentDef } from '../data/agents'
 import { useStore } from '../store'
-import { motions, positions } from '../sim/motion'
+import { facing, motions, positions, yaws } from '../sim/motion'
 import { StickFigure } from './StickFigure'
 
 const WALK_SPEED = 1.6 // m/s
@@ -49,11 +49,16 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
         pos.z += (dz / d) * step
         yaw.current = Math.atan2(dx, dz)
       }
+    } else if (facing[def.id]) {
+      const f = facing[def.id]!
+      yaw.current = Math.atan2(f.x - pos.x, f.z - pos.z)
+      delete facing[def.id]
     }
     const g = root.current
     if (!g) return
     g.position.set(pos.x, 0, pos.z)
-    g.rotation.y = lerpAngle(g.rotation.y, yaw.current, 1 - Math.exp(-10 * dt))
+    g.rotation.y = lerpAngle(g.rotation.y, yaw.current, 1 - Math.exp(-6 * dt))
+    yaws[def.id] = g.rotation.y
   })
 
   return (
@@ -67,7 +72,14 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
       onPointerOver={() => (document.body.style.cursor = 'pointer')}
       onPointerOut={() => (document.body.style.cursor = 'auto')}
     >
-      <StickFigure role={def.id} color={def.color} hobby={def.hobby} state={runtime.state} phase={index * 1.37} />
+      <StickFigure
+        role={def.id}
+        color={def.color}
+        hobby={def.hobby}
+        state={runtime.state}
+        mood={!runtime.bubble ? 'quiet' : runtime.bubble.startsWith('💭') ? 'think' : 'speak'}
+        phase={index * 1.37}
+      />
 
       {/* vùng click rộng hơn nét người que */}
       <mesh position={[0, 0.9, 0]} visible={false}>

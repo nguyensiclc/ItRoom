@@ -81,15 +81,14 @@ Nút **💬 Chat** trên thanh trên cùng mở cửa sổ chat (số đỏ là 
 
 ## Xem chi tiết agent
 
-Bấm vào người que hoặc thẻ agent ở góc dưới bên phải để mở bảng chi tiết:
+Bấm vào người que để mở bảng chi tiết (nút "💬 Nhắn" mở chat riêng với người đó):
 
 - Trạng thái, task đang giữ, sở thích, số việc đã xong.
 - CLI đang dùng (Claude Code / Antigravity, tiến trình agy có đang chạy liên tục không), số lượt và lệnh mở session.
 - Model cho từng loại việc.
-- Các kênh chat của agent: số tin, số tin chưa đọc, câu mới nhất (rê chuột để xem 3 câu gần nhất).
-- Tính cách từ `agents/<Role>.md` và các câu agent nói gần đây.
+- Tính cách từ `agents/<Role>.md`.
 
-Phần CLI, model và kênh chat lấy từ `GET /api/agent?role=BE`, tự làm mới mỗi 4 giây; không chạy server thì chỉ hiện phần trạng thái.
+Phần CLI và model lấy từ `GET /api/agent?role=BE`, tự làm mới mỗi 4 giây; không chạy server thì chỉ hiện phần trạng thái.
 
 ## Lúc rảnh
 

@@ -345,11 +345,63 @@ interface Props {
   color: string
   hobby: Hobby
   state: AnimState
+  /** Khi trò chuyện: đang nói, đang nghĩ (💭) hay đang nghe người kia */
+  mood?: Mood
   /** Lệch pha để các agent không cử động y hệt nhau */
   phase: number
 }
 
-export function StickFigure({ role, color, hobby, state, phase }: Props) {
+type Mood = 'speak' | 'think' | 'quiet'
+
+/** Tư thế tay: [rotX, rotZ] cánh tay trái/phải, rotX cẳng tay, gật đầu hx, nghiêng đầu hy */
+interface ArmPose {
+  la: number[]
+  ra: number[]
+  lf: number
+  rf: number
+  hx: number
+  hy: number
+}
+
+// Tay trái: rotZ âm = dang ra ngoài; tay phải: rotZ dương = dang ra ngoài. rotX âm = đưa ra trước / gập khuỷu
+
+/** Các kiểu cử chỉ khi nói (đổi kiểu mỗi câu) */
+const SPEAK: ((t: number) => ArmPose)[] = [
+  // hai tay mở ra giải thích
+  (t) => ({ la: [-0.45 + Math.sin(t * 3) * 0.2, -0.35], ra: [-0.45 + Math.sin(t * 3 + 1.5) * 0.2, 0.35], lf: -1.0, rf: -1.0, hx: Math.sin(t * 5) * 0.05, hy: 0 }),
+  // khua tay phải
+  (t) => ({ la: [0, -0.12], ra: [-0.9 + Math.sin(t * 4) * 0.3, 0.3 + Math.sin(t * 3) * 0.15], lf: 0, rf: -0.7, hx: Math.sin(t * 6) * 0.06, hy: 0 }),
+  // tay phải đặt lên ngực, tay trái chỉ về phía người nghe
+  (t) => ({ la: [-1.1 + Math.sin(t * 4) * 0.15, -0.1], ra: [-0.5, -0.35], lf: -0.3, rf: -1.9, hx: Math.sin(t * 4) * 0.05, hy: 0.1 }),
+  // ngửa hai bàn tay, nhún vai
+  (t) => ({ la: [-0.35, -0.7 + Math.sin(t * 5) * 0.1], ra: [-0.35, 0.7 - Math.sin(t * 5) * 0.1], lf: -1.3, rf: -1.3, hx: 0, hy: Math.sin(t * 2) * 0.15 }),
+]
+
+/** Đang chờ câu trả lời từ Claude: tay chống cằm suy nghĩ */
+const THINK = (t: number): ArmPose => ({ la: [-0.3, 0.45], ra: [-0.9, -0.3], lf: -1.3, rf: -2.1, hx: 0.12, hy: 0.2 + Math.sin(t) * 0.05 })
+
+const nod = (t: number) => Math.max(0, Math.sin(t * 2.2)) ** 3 * 0.15
+
+/** Các kiểu đứng nghe người kia nói */
+const LISTEN_STANDING: ((t: number) => ArmPose)[] = [
+  // khoanh tay, gật gù
+  (t) => ({ la: [-0.9, 0.55], ra: [-0.95, -0.55], lf: -1.5, rf: -1.45, hx: nod(t), hy: 0 }),
+  // chắp tay sau lưng
+  (t) => ({ la: [0.35, -0.15], ra: [0.35, 0.15], lf: -0.5, rf: -0.5, hx: nod(t), hy: 0 }),
+  // chống cằm
+  (t) => ({ ...THINK(t), hx: 0.05 + nod(t) }),
+  // thả lỏng
+  (t) => ({ la: [0, -0.1], ra: [0, 0.1], lf: 0, rf: 0, hx: nod(t), hy: Math.sin(t * 0.8) * 0.1 }),
+]
+
+/** Các kiểu ngồi nghe khách nói */
+const LISTEN_SEATED: ((t: number) => ArmPose)[] = [
+  (t) => ({ la: [-0.4, -0.05], ra: [-0.4, 0.05], lf: -0.9, rf: -0.9, hx: nod(t), hy: 0 }),
+  (t) => ({ la: [-0.9, 0.55], ra: [-0.95, -0.55], lf: -1.5, rf: -1.45, hx: nod(t), hy: 0 }),
+  (t) => ({ la: [-0.4, -0.05], ra: [-0.9, -0.3], lf: -0.9, rf: -2.1, hx: 0.05 + nod(t), hy: 0.15 }),
+]
+
+export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }: Props) {
   const look = LOOKS[role]
   const spin = useRef<Group>(null)
   const body = useRef<Group>(null)
@@ -368,6 +420,8 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
   const prop = useRef<Group>(null)
   const lHand = useRef<Group>(null)
   const rHand = useRef<Group>(null)
+  const moodSeen = useRef<Mood | null>(null)
+  const variant = useRef(0)
 
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime + phase
@@ -444,25 +498,23 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
         }
         break
       }
-      case 'listen': // ngồi, quay đầu sang khách
-        lt = rt = -Math.PI / 2
-        ls = rs = Math.PI / 2
-        la = [-0.4, -0.05]
-        ra = [-0.4, 0.05]
-        lf = rf = -0.9
-        hy = -0.7
-        hx = Math.sin(t * 5) * 0.08
+      case 'listen': // ngồi trên ghế đã xoay về phía khách
+      case 'talk': // đứng nói chuyện
+      case 'idle': { // đứng ở bàn họp
+        if (pose === 'listen') {
+          lt = rt = -Math.PI / 2
+          ls = rs = Math.PI / 2
+        }
+        // mỗi câu nói / mỗi lượt nghe đổi sang một kiểu cử chỉ ngẫu nhiên
+        if (mood !== moodSeen.current) {
+          moodSeen.current = mood
+          variant.current = Math.floor(Math.random() * 12)
+        }
+        const set = mood === 'speak' ? SPEAK : pose === 'listen' ? LISTEN_SEATED : LISTEN_STANDING
+        const p = mood === 'think' ? THINK(t) : set[variant.current % set.length](t)
+        ;({ la, ra, lf, rf, hx, hy } = p)
         break
-      case 'talk': // đứng, tay phải khua khi nói
-        ra = [-0.9 + Math.sin(t * 4) * 0.3, 0.3 + Math.sin(t * 3) * 0.15]
-        rf = -0.7
-        la = [0, -0.12]
-        hx = Math.sin(t * 6) * 0.06
-        break
-      case 'idle':
-        la = [0, -0.1 - Math.sin(t * 2) * 0.03]
-        ra = [0, 0.1 + Math.sin(t * 2) * 0.03]
-        break
+      }
     }
 
     const lerpX = (g: Group | null, x: number) => g && (g.rotation.x = MathUtils.lerp(g.rotation.x, x, k))

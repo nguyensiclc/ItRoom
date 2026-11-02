@@ -1,9 +1,10 @@
 import { useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { RoundedBox } from '@react-three/drei'
-import { CanvasTexture, RepeatWrapping, SRGBColorSpace, type Group, type MeshStandardMaterial } from 'three'
+import { CanvasTexture, MathUtils, RepeatWrapping, SRGBColorSpace, type Group, type MeshStandardMaterial } from 'three'
 import { AGENTS, CUBICLE_FRONT_Z, CUBICLE_WIDTH, DESK_Z, MEETING_CENTER, SEAT_Z, type AgentDef } from '../data/agents'
 import { useStore } from '../store'
+import { positions, yaws } from '../sim/motion'
 
 type V3 = [number, number, number]
 
@@ -115,11 +116,57 @@ function codeTexture(accent: string) {
   return tex
 }
 
-/** Màn hình: hiện code; đổi màu liên tục như đang chiếu phim khi chủ khoang xem phim */
-function Screen({ owner, position }: { owner: AgentDef; position: V3 }) {
+const sideTextures = new Map<string, CanvasTexture>()
+
+/** Màn hình phụ: BE xem log terminal, người khác xem bản chạy thử của web app */
+function sideTexture(owner: AgentDef) {
+  let tex = sideTextures.get(owner.id)
+  if (tex) return tex
+  const c = document.createElement('canvas')
+  c.width = 256
+  c.height = 144
+  const g = c.getContext('2d')!
+  const rand = rng(owner.id.length * 131 + owner.color.charCodeAt(3) * 17)
+  if (owner.id === 'BE') {
+    g.fillStyle = '#05080f'
+    g.fillRect(0, 0, 256, 144)
+    for (let y = 8; y < 140; y += 8) {
+      g.fillStyle = rand() < 0.15 ? '#fbbf24' : rand() < 0.5 ? '#4ade80' : '#94a3b8'
+      g.fillRect(6, y, 20, 3)
+      g.fillRect(32, y, 30 + rand() * 170, 3)
+    }
+  } else {
+    g.fillStyle = '#f8fafc'
+    g.fillRect(0, 0, 256, 144)
+    g.fillStyle = owner.color
+    g.fillRect(0, 0, 256, 18)
+    g.fillStyle = '#ffffff'
+    for (let i = 0; i < 4; i++) g.fillRect(150 + i * 25, 7, 18, 4)
+    g.fillStyle = '#e2e8f0'
+    g.fillRect(12, 28, 120, 10)
+    g.fillRect(12, 44, 90, 6)
+    for (let i = 0; i < 3; i++) {
+      g.fillStyle = '#ffffff'
+      g.fillRect(12 + i * 80, 62, 72, 66)
+      g.fillStyle = ['#fde68a', '#bfdbfe', '#fbcfe8'][i]
+      g.fillRect(16 + i * 80, 66, 64, 36)
+      g.fillStyle = '#cbd5e1'
+      g.fillRect(16 + i * 80, 108, 50, 4)
+      g.fillStyle = owner.color
+      g.fillRect(16 + i * 80, 117, 30, 7)
+    }
+  }
+  tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  sideTextures.set(owner.id, tex)
+  return tex
+}
+
+/** Màn hình: hiện code (màn chính) hoặc màn phụ; màn chính đổi màu liên tục như đang chiếu phim khi chủ khoang xem phim */
+function Screen({ owner, position, side = false }: { owner: AgentDef; position: V3; side?: boolean }) {
   const movie = useRef<MeshStandardMaterial>(null)
-  const watching = useStore((s) => owner.hobby === 'movie' && s.agents[owner.id].state === 'hobby')
-  const tex = useMemo(() => codeTexture(owner.color), [owner.color])
+  const watching = useStore((s) => !side && owner.hobby === 'movie' && s.agents[owner.id].state === 'hobby')
+  const tex = useMemo(() => (side ? sideTexture(owner) : codeTexture(owner.color)), [owner, side])
   useFrame(({ clock }) => {
     if (!movie.current || !watching) return
     const t = clock.elapsedTime
@@ -128,11 +175,11 @@ function Screen({ owner, position }: { owner: AgentDef; position: V3 }) {
   return (
     <group position={position}>
       <mesh>
-        <planeGeometry args={[0.7, 0.4]} />
+        <planeGeometry args={[0.55, 0.32]} />
         <meshStandardMaterial map={tex} emissiveMap={tex} emissive="#ffffff" emissiveIntensity={0.9} roughness={0.3} />
       </mesh>
       <mesh position={[0, 0, 0.001]} visible={watching}>
-        <planeGeometry args={[0.7, 0.4]} />
+        <planeGeometry args={[0.55, 0.32]} />
         <meshStandardMaterial ref={movie} color="#000" emissive="#6366f1" emissiveIntensity={0.9} />
       </mesh>
     </group>
@@ -140,9 +187,22 @@ function Screen({ owner, position }: { owner: AgentDef; position: V3 }) {
 }
 
 /** Ghế văn phòng: đệm màu theo chủ, chân sao 5 cánh có bánh xe */
-function Chair({ x, z, color }: { x: number; z: number; color: string }) {
+/** Ghế văn phòng xoay theo chủ khoang khi họ ngồi (vd quay sang nói chuyện với khách) */
+function Chair({ x, z, owner }: { x: number; z: number; owner: AgentDef }) {
+  const color = owner.color
+  const ref = useRef<Group>(null)
+  useFrame((_, dt) => {
+    const g = ref.current
+    if (!g) return
+    const p = positions[owner.id]
+    const seated = Math.hypot(p.x - owner.seat[0], p.z - owner.seat[1]) < 0.05
+    // người ngồi quay mặt vào bàn (góc π) thì ghế ở góc 0
+    const target = seated ? yaws[owner.id] - Math.PI : 0
+    const d = MathUtils.euclideanModulo(target - g.rotation.y + Math.PI, Math.PI * 2) - Math.PI
+    g.rotation.y += d * (1 - Math.exp(-8 * dt))
+  })
   return (
-    <group position={[x, 0, z]}>
+    <group ref={ref} position={[x, 0, z]}>
       <Soft args={[0.5, 0.08, 0.48]} position={[0, 0.46, 0]} color={color} radius={0.035} roughness={0.9} />
       <Soft args={[0.48, 0.55, 0.07]} position={[0, 0.78, 0.25]} color={color} radius={0.035} roughness={0.9} rotation={[-0.08, 0, 0]} />
       <Box args={[0.04, 0.3, 0.04]} position={[0, 0.55, 0.25]} color="#1f2937" />
@@ -209,7 +269,7 @@ function DeskItems({ owner, x }: { owner: AgentDef; x: number }) {
   switch (owner.hobby) {
     case 'read': // chồng sách
       return (
-        <group position={[x + 0.6, 0.78, z - 0.2]}>
+        <group position={[x + 0.7, 0.78, z + 0.1]}>
           {['#b91c1c', '#1d4ed8', '#ca8a04'].map((c, i) => (
             <Box key={c} args={[0.24 - i * 0.02, 0.045, 0.17]} position={[0, 0.025 + i * 0.047, 0]} rotation={[0, i * 0.2 - 0.2, 0]} color={c} />
           ))}
@@ -217,7 +277,7 @@ function DeskItems({ owner, x }: { owner: AgentDef; x: number }) {
       )
     case 'game': // tay cầm chơi game
       return (
-        <group position={[x + 0.58, 0.8, z + 0.05]} rotation={[0, 0.4, 0]}>
+        <group position={[x + 0.7, 0.8, z + 0.15]} rotation={[0, 0.4, 0]}>
           <Soft args={[0.16, 0.03, 0.08]} position={[0, 0, 0]} color="#111827" radius={0.012} />
           <mesh position={[0, 0.02, 0]}>
             <boxGeometry args={[0.04, 0.005, 0.02]} />
@@ -227,21 +287,21 @@ function DeskItems({ owner, x }: { owner: AgentDef; x: number }) {
       )
     case 'music': // loa nhỏ
       return (
-        <group position={[x + 0.6, 0.78, z - 0.2]}>
+        <group position={[x + 0.72, 0.78, z + 0.05]}>
           <Soft args={[0.12, 0.2, 0.12]} position={[0, 0.1, 0]} color="#334155" radius={0.02} />
           <Cyl args={[0.04, 0.04, 0.01]} position={[0, 0.12, 0.061]} rotation={[Math.PI / 2, 0, 0]} color="#0f172a" />
         </group>
       )
     case 'movie': // poster phim mini
       return (
-        <group position={[x + 0.6, 0.78, z - 0.25]} rotation={[-0.15, -0.3, 0]}>
+        <group position={[x + 0.7, 0.78, z + 0.05]} rotation={[-0.15, -0.3, 0]}>
           <Box args={[0.16, 0.22, 0.015]} position={[0, 0.11, 0]} color="#7f1d1d" />
           <Box args={[0.12, 0.08, 0.005]} position={[0, 0.14, 0.009]} color="#fbbf24" emissive="#f59e0b" />
         </group>
       )
     case 'rubik': // khối rubik để bàn
       return (
-        <mesh position={[x + 0.6, 0.82, z - 0.15]} rotation={[0, 0.6, 0]} castShadow>
+        <mesh position={[x + 0.7, 0.82, z + 0.12]} rotation={[0, 0.6, 0]} castShadow>
           <boxGeometry args={[0.08, 0.08, 0.08]} />
           {['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#f8fafc'].map((c, i) => (
             <meshStandardMaterial key={c} attach={`material-${i}`} color={c} />
@@ -269,11 +329,16 @@ function Workstation({ owner }: { owner: AgentDef }) {
       {[0.42, 0.24].map((y) => (
         <Box key={y} args={[0.12, 0.015, 0.01]} position={[x - 0.5, y, DESK_Z + 0.155]} color="#94a3b8" metalness={0.6} />
       ))}
-      {/* màn hình viền mỏng trên chân đế */}
-      <Soft args={[0.76, 0.45, 0.03]} position={[x, 1.1, DESK_Z - 0.25]} color="#111827" radius={0.012} roughness={0.4} />
-      <Screen owner={owner} position={[x, 1.1, DESK_Z - 0.233]} />
-      <Box args={[0.05, 0.25, 0.03]} position={[x, 0.9, DESK_Z - 0.29]} color="#9ca3af" metalness={0.7} roughness={0.3} />
-      <Soft args={[0.24, 0.015, 0.16]} position={[x, 0.785, DESK_Z - 0.27]} color="#9ca3af" radius={0.006} />
+      {/* hai màn hình viền mỏng trên tay đỡ đôi, xoay nhẹ vào giữa cho người ngồi */}
+      <Soft args={[0.26, 0.015, 0.18]} position={[x, 0.785, DESK_Z - 0.3]} color="#9ca3af" radius={0.006} />
+      <Box args={[0.04, 0.34, 0.04]} position={[x, 0.95, DESK_Z - 0.32]} color="#9ca3af" metalness={0.7} roughness={0.3} />
+      <Box args={[0.56, 0.03, 0.03]} position={[x, 1.1, DESK_Z - 0.31]} color="#9ca3af" metalness={0.7} roughness={0.3} />
+      {[-1, 1].map((s) => (
+        <group key={s} position={[x + s * 0.3, 1.1, DESK_Z - 0.26]} rotation={[0, -s * 0.25, 0]}>
+          <Soft args={[0.58, 0.36, 0.025]} position={[0, 0, 0]} color="#111827" radius={0.01} roughness={0.4} />
+          <Screen owner={owner} position={[0, 0, 0.0135]} side={s > 0} />
+        </group>
+      ))}
       {/* bàn phím + chuột + lót chuột */}
       <Soft args={[0.46, 0.02, 0.15]} position={[x, 0.785, DESK_Z + 0.18]} color="#f1f5f9" radius={0.008} />
       <Box args={[0.22, 0.004, 0.2]} position={[x + 0.36, 0.777, DESK_Z + 0.18]} color="#1e293b" />
@@ -282,7 +347,7 @@ function Workstation({ owner }: { owner: AgentDef }) {
         <meshStandardMaterial color="#f1f5f9" roughness={0.4} />
       </mesh>
       {/* cốc cà phê có quai */}
-      <group position={[x - 0.6, 0.775, DESK_Z + 0.15]}>
+      <group position={[x - 0.45, 0.775, DESK_Z + 0.22]}>
         <Cyl args={[0.04, 0.035, 0.1]} position={[0, 0.05, 0]} color={owner.color} roughness={0.35} />
         <mesh position={[0.045, 0.05, 0]}>
           <torusGeometry args={[0.022, 0.007, 6, 12]} />
@@ -290,12 +355,12 @@ function Workstation({ owner }: { owner: AgentDef }) {
         </mesh>
         <Cyl args={[0.034, 0.034, 0.005]} position={[0, 0.092, 0]} color="#3f2a1d" />
       </group>
-      <DeskLamp position={[x - 0.68, 0.775, DESK_Z - 0.28]} />
-      <Succulent position={[x + 0.25 + (owner.hobby === 'read' || owner.hobby === 'music' || owner.hobby === 'movie' ? 0.1 : 0.35), 0.775, DESK_Z - 0.3]} />
+      <DeskLamp position={[x - 0.74, 0.775, DESK_Z + 0.05]} />
+      <Succulent position={[x + 0.72, 0.775, DESK_Z - 0.3]} />
       <DeskItems owner={owner} x={x} />
       {/* giấy note dán trên viền màn hình */}
-      <Box args={[0.06, 0.06, 0.003]} position={[x + 0.34, 1.29, DESK_Z - 0.232]} rotation={[0, 0, 0.1]} color="#fde047" />
-      <Chair x={x} z={SEAT_Z + 0.05} color={owner.color} />
+      <Box args={[0.06, 0.06, 0.003]} position={[x + 0.52, 1.25, DESK_Z - 0.19]} rotation={[0, -0.25, 0.1]} color="#fde047" />
+      <Chair x={x} z={SEAT_Z + 0.05} owner={owner} />
     </group>
   )
 }
@@ -457,6 +522,159 @@ const GLASS_HEIGHT = 0.3
 const PANEL_BACK_Z = -3.42
 
 /** Khoang ngồi: thảm theo màu vai trò, vách vải + kính mờ, bảng tên trên tường */
+// ---------- đồ dùng văn phòng ----------
+
+/** Máy in đa năng trên tủ thấp, xấp giấy vừa in và thùng giấy A4 bên cạnh */
+function PrinterStation({ position, rotation }: { position: V3; rotation: V3 }) {
+  return (
+    <group position={position} rotation={rotation}>
+      <Soft args={[0.8, 0.62, 0.5]} position={[0, 0.31, 0]} color="#e2e8f0" radius={0.02} />
+      <Box args={[0.78, 0.008, 0.01]} position={[0, 0.31, 0.251]} color="#94a3b8" />
+      <Soft args={[0.62, 0.3, 0.46]} position={[0, 0.77, 0]} color="#f8fafc" radius={0.03} />
+      <Soft args={[0.62, 0.06, 0.46]} position={[0, 0.95, 0]} color="#475569" radius={0.02} />
+      {/* màn hình cảm ứng + đèn báo */}
+      <Box args={[0.14, 0.06, 0.01]} position={[0.18, 0.86, 0.232]} rotation={[-0.4, 0, 0]} color="#0f172a" emissive="#38bdf8" />
+      <mesh position={[0.28, 0.86, 0.235]}>
+        <sphereGeometry args={[0.01, 8, 8]} />
+        <meshStandardMaterial color="#22c55e" emissive="#22c55e" emissiveIntensity={1.5} />
+      </mesh>
+      {/* khay giấy ra */}
+      <Box args={[0.36, 0.01, 0.22]} position={[-0.06, 0.72, 0.3]} rotation={[0.12, 0, 0]} color="#cbd5e1" />
+      <Box args={[0.3, 0.012, 0.2]} position={[-0.06, 0.735, 0.3]} rotation={[0.12, 0, 0]} color="#ffffff" />
+      {/* thùng giấy A4 */}
+      <Box args={[0.36, 0.26, 0.26]} position={[0.62, 0.13, 0.05]} rotation={[0, 0.2, 0]} color="#c8a26b" />
+      <Box args={[0.36, 0.01, 0.12]} position={[0.62, 0.265, 0.05]} rotation={[0, 0.2, 0]} color="#b08850" />
+    </group>
+  )
+}
+
+/** Cây nước nóng lạnh với bình nước xanh và chồng cốc giấy */
+function WaterCooler({ position, rotation }: { position: V3; rotation: V3 }) {
+  return (
+    <group position={position} rotation={rotation}>
+      <Soft args={[0.34, 0.95, 0.34]} position={[0, 0.475, 0]} color="#f8fafc" radius={0.03} />
+      <Box args={[0.22, 0.24, 0.01]} position={[0, 0.62, 0.171]} color="#cbd5e1" />
+      {[-0.05, 0.05].map((x, i) => (
+        <Box key={x} args={[0.03, 0.05, 0.04]} position={[x, 0.7, 0.19]} color={i ? '#3b82f6' : '#ef4444'} />
+      ))}
+      <Box args={[0.2, 0.02, 0.08]} position={[0, 0.52, 0.2]} color="#64748b" />
+      <mesh position={[0, 1.15, 0]}>
+        <cylinderGeometry args={[0.13, 0.13, 0.36, 24]} />
+        <meshStandardMaterial color="#7dd3fc" transparent opacity={0.6} roughness={0.1} />
+      </mesh>
+      <Cyl args={[0.06, 0.13, 0.06]} position={[0, 0.97, 0]} color="#7dd3fc" />
+      {/* cốc giấy gắn bên hông */}
+      <Cyl args={[0.035, 0.035, 0.22]} position={[0.2, 0.75, 0.05]} color="#e2e8f0" />
+      <Cyl args={[0.04, 0.03, 0.05]} position={[0.2, 0.63, 0.05]} color="#ffffff" />
+    </group>
+  )
+}
+
+/** Tủ hồ sơ cao 4 ngăn, trên nóc có hộp tài liệu */
+function FilingCabinet({ position, rotation }: { position: V3; rotation: V3 }) {
+  return (
+    <group position={position} rotation={rotation}>
+      <Soft args={[0.5, 1.32, 0.55]} position={[0, 0.66, 0]} color="#9ca3af" radius={0.015} roughness={0.45} />
+      {[0, 1, 2, 3].map((i) => (
+        <group key={i} position={[0, 0.17 + i * 0.32, 0.278]}>
+          <Box args={[0.46, 0.29, 0.01]} position={[0, 0, 0]} color="#a8b0bb" roughness={0.45} />
+          <Box args={[0.16, 0.025, 0.02]} position={[0, -0.04, 0.01]} color="#475569" metalness={0.6} />
+          <Box args={[0.1, 0.05, 0.004]} position={[0, 0.06, 0.007]} color="#f8fafc" />
+        </group>
+      ))}
+      {['#1d4ed8', '#b91c1c', '#15803d'].map((c, i) => (
+        <Box key={c} args={[0.08, 0.3, 0.26]} position={[-0.14 + i * 0.09, 1.47, 0]} rotation={[0, 0, i === 2 ? -0.2 : 0]} color={c} />
+      ))}
+    </group>
+  )
+}
+
+/** Thùng rác nhỏ có vài cục giấy vo */
+function TrashBin({ position }: { position: V3 }) {
+  return (
+    <group position={position}>
+      <mesh position={[0, 0.15, 0]} castShadow>
+        <cylinderGeometry args={[0.12, 0.1, 0.3, 18, 1, true]} />
+        <meshStandardMaterial color="#334155" side={2} roughness={0.6} />
+      </mesh>
+      <Cyl args={[0.1, 0.1, 0.01]} position={[0, 0.01, 0]} color="#334155" />
+      {[[0.03, 0.26, 0.02], [-0.04, 0.24, -0.03]].map((p, i) => (
+        <mesh key={i} position={p as V3}>
+          <icosahedronGeometry args={[0.04, 0]} />
+          <meshStandardMaterial color="#f8fafc" roughness={0.9} flatShading />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
+/** Cửa ra vào trên tường trái, có biển EXIT phát sáng */
+function Door({ z }: { z: number }) {
+  return (
+    <group position={[-7.92, 0, z]} rotation={[0, Math.PI / 2, 0]}>
+      <Box args={[1.1, 2.2, 0.06]} position={[0, 1.1, 0]} color="#e7e1d6" />
+      <Box args={[0.96, 2.1, 0.05]} position={[0, 1.05, 0.02]} color="#a0764e" roughness={0.6} />
+      <Box args={[0.3, 0.6, 0.01]} position={[0, 1.55, 0.05]} color="#bae6fd" roughness={0.1} />
+      <Box args={[0.16, 0.03, 0.04]} position={[0.36, 1.0, 0.07]} color="#d1d5db" metalness={0.8} roughness={0.25} />
+      {/* biển EXIT */}
+      <Soft args={[0.42, 0.16, 0.05]} position={[0, 2.42, 0.02]} color="#15803d" radius={0.015} />
+      <Box args={[0.36, 0.1, 0.005]} position={[0, 2.42, 0.048]} color="#22c55e" emissive="#4ade80" />
+    </group>
+  )
+}
+
+/** Cây treo áo: áo khoác và túi xách */
+function CoatRack({ position }: { position: V3 }) {
+  return (
+    <group position={position}>
+      <Cyl args={[0.18, 0.2, 0.04]} position={[0, 0.02, 0]} color="#1f2937" />
+      <Cyl args={[0.025, 0.025, 1.75]} position={[0, 0.9, 0]} color="#5b4636" />
+      {[0, 1, 2, 3].map((i) => (
+        <Cyl key={i} args={[0.012, 0.012, 0.16]} position={[Math.cos(i * 1.57) * 0.07, 1.68, Math.sin(i * 1.57) * 0.07]} rotation={[Math.sin(i * 1.57) * 0.9, 0, -Math.cos(i * 1.57) * 0.9]} color="#5b4636" />
+      ))}
+      {/* áo khoác */}
+      <mesh position={[0.11, 1.32, 0]} scale={[0.7, 1, 1]} castShadow>
+        <capsuleGeometry args={[0.1, 0.4, 6, 12]} />
+        <meshStandardMaterial color="#475569" roughness={0.9} />
+      </mesh>
+      {/* túi xách */}
+      <Soft args={[0.24, 0.2, 0.08]} position={[-0.12, 1.3, 0.04]} color="#b45309" radius={0.02} />
+      <mesh position={[-0.12, 1.47, 0.04]}>
+        <torusGeometry args={[0.07, 0.008, 6, 16, Math.PI]} />
+        <meshStandardMaterial color="#78350f" />
+      </mesh>
+    </group>
+  )
+}
+
+/** Bình chữa cháy treo tường */
+function FireExtinguisher({ position }: { position: V3 }) {
+  return (
+    <group position={position}>
+      <Box args={[0.02, 0.3, 0.14]} position={[-0.06, 0.1, 0]} color="#374151" />
+      <Cyl args={[0.06, 0.06, 0.4]} position={[0, 0, 0]} color="#dc2626" roughness={0.35} />
+      <Cyl args={[0.025, 0.04, 0.08]} position={[0, 0.24, 0]} color="#111827" />
+      <Box args={[0.1, 0.015, 0.03]} position={[0.03, 0.29, 0]} color="#111827" />
+      <Box args={[0.01, 0.14, 0.1]} position={[0.061, -0.02, 0]} color="#f8fafc" />
+    </group>
+  )
+}
+
+/** Máy lạnh treo tường, đèn xanh đang chạy */
+function AirConditioner({ position }: { position: V3 }) {
+  return (
+    <group position={position}>
+      <Soft args={[1.0, 0.3, 0.22]} position={[0, 0, 0]} color="#f8fafc" radius={0.05} />
+      <Box args={[0.86, 0.02, 0.01]} position={[0, -0.1, 0.11]} color="#cbd5e1" />
+      <Box args={[0.86, 0.04, 0.06]} position={[0, -0.13, 0.08]} rotation={[0.5, 0, 0]} color="#e2e8f0" />
+      <mesh position={[0.4, 0.06, 0.112]}>
+        <sphereGeometry args={[0.012, 8, 8]} />
+        <meshStandardMaterial color="#22d3ee" emissive="#22d3ee" emissiveIntensity={2} />
+      </mesh>
+    </group>
+  )
+}
+
 function Cubicles() {
   const depth = CUBICLE_FRONT_Z - PANEL_BACK_Z
   const midZ = (CUBICLE_FRONT_Z + PANEL_BACK_Z) / 2
@@ -561,6 +779,19 @@ export function Office() {
 
       <MeetingArea />
       <Lounge />
+
+      {/* góc tiện ích bên phải: máy in, cây nước, tủ hồ sơ */}
+      <PrinterStation position={[6.9, 0, 0.5]} rotation={[0, -Math.PI / 2, 0]} />
+      <WaterCooler position={[7.1, 0, 1.7]} rotation={[0, -Math.PI / 2, 0]} />
+      <FilingCabinet position={[7.05, 0, 2.6]} rotation={[0, -Math.PI / 2, 0]} />
+      {/* cửa ra vào, cây treo áo, bình chữa cháy */}
+      <Door z={3.4} />
+      <CoatRack position={[-7.4, 0, 2.3]} />
+      <FireExtinguisher position={[-7.85, 0.75, 4.6]} />
+      <AirConditioner position={[-5.0, 2.7, -3.3]} />
+      {AGENTS.map((a) => (
+        <TrashBin key={a.id} position={[a.seat[0] + 0.6, 0, DESK_Z + 0.05]} />
+      ))}
 
       <Plant position={[-7.45, 0, -2.95]} />
       <Plant position={[7.45, 0, -2.95]} />

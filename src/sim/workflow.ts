@@ -3,7 +3,7 @@ import {
   type DevRole, type Role,
 } from '../data/agents'
 import { useStore, type Area, type Stage } from '../store'
-import { fromAisle, motions, toAisle, walkPath, walkTo } from './motion'
+import { faceTo, fromAisle, motions, toAisle, walkPath, walkTo } from './motion'
 import { aiLine, markAssignmentDone, startAssignmentPolling, startEventPolling, startStatusSync, type Assignment, type Channel, type Kind } from './ai'
 
 // Agent chỉ làm việc khi sếp giao (qua office/inbox.md hoặc ô giao việc trên giao diện):
@@ -92,8 +92,10 @@ async function visit(from: Role, to: Role, line: Exchange, reply: Exchange) {
     await Promise.all([walkTo(from, x + 0.8, z + 0.4, [x, z]), arrived(to)])
     S().setAgent(from, { state: 'talk' })
     S().setAgent(to, { state: 'listen' })
+    faceTo(to, x + 0.8, z + 0.4) // xoay ghế nhìn khách
     await talk(from, `Bạn đang đứng ở khoang của ${agentById(to).name} (${to}). ${line.situation}`, line.fallback, undefined, to)
     await talk(to, `${agentById(from).name} (${from}) vừa đến khoang của bạn. ${reply.situation}`, reply.fallback, 1800, from)
+    faceTo(to, x, DESK_Z)
     settle(to)
   })
 }
@@ -359,6 +361,7 @@ async function smallTalk(from: Role, to: Role) {
     await walkTo(from, x + 0.8, z + 0.4, [x, z])
     S().setAgent(from, { state: 'talk' })
     S().setAgent(to, { state: 'listen' })
+    faceTo(to, x + 0.8, z + 0.4)
     await talk(
       from,
       `Bạn đang rảnh việc (vừa ${HOBBIES[a.hobby].label}), sang khoang ${b.name} (${to}) đang ${HOBBIES[b.hobby].label}. ` +
@@ -373,6 +376,7 @@ async function smallTalk(from: Role, to: Role) {
       1800, from, 'smalltalk',
     )
     await talk(from, `Bạn kết thúc câu chuyện phiếm với ${b.name} một cách vui vẻ, rồi về khoang.`, 'Hay đấy, lát rủ nhau nhé! 👋', 1500, to, 'smalltalk')
+    faceTo(to, x, DESK_Z)
     settle(to)
     await goHome(from)
   })

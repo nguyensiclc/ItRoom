@@ -16,19 +16,10 @@ const STAGE_LABEL = { todo: 'chưa bắt đầu', meeting: 'đang họp', dev: '
 
 const KIND_LABEL = { smalltalk: 'Tán gẫu', work: 'Làm việc', plan: 'Họp', boss: 'Với sếp' }
 
-/** Tên kênh dễ đọc: "BE-QA.md" → "↔ QA", "Sep-BE.md" → "↔ Sếp", "team.md" → "Team" */
-function channelLabel(file: string, role: Role) {
-  const base = file.replace(/\.md$/, '')
-  if (base === 'team') return 'Kênh team'
-  if (base.startsWith('Sep-')) return '↔ Sếp'
-  return `↔ ${base.split('-').find((r) => r !== role) ?? base}`
-}
-
 export function AgentDetail({ role }: { role: Role }) {
   const def = agentById(role)
   const runtime = useStore((s) => s.agents[role])
   const tasks = useStore((s) => s.tasks)
-  const log = useStore((s) => s.log)
   const select = useStore((s) => s.select)
   const [detail, setDetail] = useState<Detail | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -56,7 +47,6 @@ export function AgentDetail({ role }: { role: Role }) {
   const mine = tasks.filter((t) => t.assignee === role)
   const doneMine = mine.filter((t) => t.stage === 'done').length
   const doneTeam = tasks.filter((t) => t.assignee === 'team' && t.stage === 'done').length
-  const lines = log.filter((l) => l.who === role).slice(0, 4)
   const hobby = HOBBIES[def.hobby]
 
   return (
@@ -129,23 +119,6 @@ export function AgentDetail({ role }: { role: Role }) {
             ))}
           </div>
 
-          <h3>Kênh chat</h3>
-          {detail.channels.length === 0 ? (
-            <p className="muted">Chưa nói chuyện với ai.</p>
-          ) : (
-            <ul className="channels">
-              {detail.channels.map((c) => (
-                <li key={c.name} title={c.recent.map((m) => `${m.time} ${m.who}: ${m.text}`).join('\n')}>
-                  <span>{c.label ?? channelLabel(c.name, role)}</span>
-                  <small>
-                    {c.count} tin{c.unread > 0 && <b> · {c.unread} chưa đọc</b>}
-                  </small>
-                  {c.recent.at(-1) && <q>{c.recent.at(-1)!.who}: {c.recent.at(-1)!.text}</q>}
-                </li>
-              ))}
-            </ul>
-          )}
-
           <button className="link" onClick={() => setShowPersona((v) => !v)}>
             {showPersona ? 'Ẩn' : 'Xem'} tính cách (agents/{role}.md)
           </button>
@@ -153,16 +126,6 @@ export function AgentDetail({ role }: { role: Role }) {
         </>
       )}
 
-      {lines.length > 0 && (
-        <>
-          <h3>Câu nói gần đây</h3>
-          {lines.map((l) => (
-            <div key={l.id} className="line" title={l.text}>
-              <time>{l.time}</time> {l.text}
-            </div>
-          ))}
-        </>
-      )}
     </aside>
   )
 }

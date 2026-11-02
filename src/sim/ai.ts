@@ -190,7 +190,6 @@ export interface AgentDetail {
   session: { id: string; started: string; turns: number; open: string } | null
   worker: { alive: boolean; model: string | null } | null
   status: string | null
-  channels: { name: string; label?: string; count: number; unread: number; recent: { time: string; who: string; text: string }[] }[]
 }
 
 /** Chi tiết agent từ server (persona, session CLI, model, kênh chat); null khi server không chạy */
