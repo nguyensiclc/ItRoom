@@ -9,6 +9,7 @@
 // Chạy: npm run server
 import http from 'node:http'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -99,8 +100,10 @@ function modelFor(kind: Kind, engine: Engine): string | undefined {
 }
 
 /** Chuyên môn của agent (agents/<Role>_skills.md); trống nếu chưa có file */
+const skillsFile = (role: Role) => path.join(AGENTS_DIR, `${role}_skills.md`)
+
 function skillsOf(role: Role) {
-  const file = path.join(AGENTS_DIR, `${role}_skills.md`)
+  const file = skillsFile(role)
   return fs.existsSync(file) ? readMd(file) : ''
 }
 
@@ -185,8 +188,10 @@ interface AgentSession {
   turns: number
   /** Số tin đã giao cho agent trong từng file kênh (theo tên file) */
   seen: Record<string, number>
+  /** agy: dấu vân tay của hồ sơ (tính cách + chuyên môn) đã gửi gần nhất, để biết khi nào cần gửi lại */
+  promptHash?: string
   /** Session làm việc thật trong thư mục dự án (Claude CLI lưu session theo thư mục chạy) */
-  work?: { id: string; project: string; turns: number }
+  work?: { id: string; project: string; turns: number; promptHash?: string }
 }
 
 let sessions: Partial<Record<Role, AgentSession>> = {}
@@ -557,14 +562,31 @@ async function agyTurnInner(role: Role, s: AgentSession, text: string, model?: s
   }
 }
 
-/** Gọi đúng CLI của agent; với agy lượt đầu thì ghép persona vào prompt và ghi lại conversation_id */
+const promptHash = (text: string) => createHash('sha1').update(text).digest('hex').slice(0, 12)
+
+/**
+ * Hồ sơ mới (luật + tính cách + chuyên môn) cần gửi kèm tin nhắn khi session đã có từ trước.
+ * Claude CLI giữ system prompt của lượt đầu khi --resume (cờ --system-prompt lúc đó bị bỏ qua),
+ * còn agy không có cờ system prompt; nên mỗi khi file tính cách / chuyên môn đổi (trang cài đặt hoặc sửa tay)
+ * thì lượt tiếp theo gửi lại bản mới trong tin nhắn, để agent luôn làm theo bản mới nhất.
+ */
+function profileUpdate(system: string, lastHash: string | undefined) {
+  return lastHash === promptHash(system) ? '' : `Hồ sơ của bạn vừa được cập nhật. Từ giờ làm theo bản dưới đây, thay cho bản cũ:\n\n${system}\n\n---\n\n`
+}
+
+/** Gọi đúng CLI của agent; lượt đầu hồ sơ nằm ở system prompt (claude) hoặc đầu tin nhắn (agy) */
 async function runEngine(role: Role, s: AgentSession, prompt: string, model?: string): Promise<Line & { via: string }> {
   const first = s.turns === 0
+  const system = systemPrompt(role)
+  const update = first ? '' : profileUpdate(system, s.promptHash)
+  let line: Line & { via: string }
   if ((s.engine ?? 'claude') === 'claude') {
-    return { ...(await runClaude(systemPrompt(role), prompt, s.id, !first, model)), via: 'gọi từng lần' }
+    line = { ...(await runClaude(system, `${update}${prompt}`, s.id, !first, model)), via: 'gọi từng lần' }
+  } else {
+    line = await agyTurn(role, s, `${first ? `${system}\n\n---\n\n` : update}${prompt}\n\n${AGY_FORMAT}`, model)
   }
-  const text = `${first ? `${systemPrompt(role)}\n\n---\n\n` : ''}${prompt}\n\n${AGY_FORMAT}`
-  return agyTurn(role, s, text, model)
+  s.promptHash = promptHash(system)
+  return line
 }
 
 /**
@@ -717,12 +739,12 @@ Bạn đang làm việc thật trong thư mục dự án (thư mục hiện tạ
 - Không chạy lệnh chờ mãi (dev server, watch); chạy build/test một lần rồi dừng.
 - Trả lời cuối cùng theo đúng schema: summary là 1-2 câu tiếng Việt kể ngắn đã làm gì (để nói với đồng đội), details là chi tiết (file đã đổi, cách chạy, lỗi cụ thể nếu có).`
 
-function runClaudeWork(role: Role, cwd: string, prompt: string, sessionId: string, resume: boolean, model?: string): Promise<WorkResult> {
+function runClaudeWork(role: Role, cwd: string, system: string, prompt: string, sessionId: string, resume: boolean, model?: string): Promise<WorkResult> {
   const args = [
     '-p',
     '--output-format', 'json',
     '--json-schema', WORK_SCHEMA,
-    '--system-prompt', `${systemPrompt(role)}\n${WORK_RULES}`,
+    '--system-prompt', system,
     '--allowedTools', ...toolsFor(role),
     resume ? '--resume' : '--session-id', sessionId,
   ]
@@ -812,16 +834,18 @@ function doWork(w: WorkRequest) {
     const t0 = Date.now()
     console.log(`[làm việc] ${w.role} · ${w.step} · ${w.branch}`)
     const model = frontmatter(PROJECT_FILE, 'code_model') ?? modelFor('work', 'claude')
-    const prompt = workPrompt(w, p.base, diff)
+    const system = `${systemPrompt(w.role)}\n${WORK_RULES}`
+    const prompt = `${work.turns > 0 ? profileUpdate(system, work.promptHash) : ''}${workPrompt(w, p.base, diff)}`
     let result: WorkResult
     try {
-      result = await runClaudeWork(w.role, p.dir, prompt, work.id, work.turns > 0, model)
+      result = await runClaudeWork(w.role, p.dir, system, prompt, work.id, work.turns > 0, model)
     } catch (e) {
       // lượt đầu lỗi giữa chừng (vd hết quota) nhưng CLI đã tạo session: nối tiếp thay vì tạo lại
       if (!/already in use/i.test((e as Error).message)) throw e
-      result = await runClaudeWork(w.role, p.dir, prompt, work.id, true, model)
+      result = await runClaudeWork(w.role, p.dir, system, prompt, work.id, true, model)
     }
     work.turns++
+    work.promptHash = promptHash(system)
     saveSessions()
 
     // commit những gì agent đã sửa, tác giả là agent đó
@@ -1121,12 +1145,12 @@ function send(res: http.ServerResponse, status: number, data: unknown) {
   res.end(JSON.stringify(data))
 }
 
-function readJson(req: http.IncomingMessage): Promise<Record<string, unknown> | null> {
+function readJson(req: http.IncomingMessage, limit = 10_000): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
     let raw = ''
     req.on('data', (chunk) => {
       raw += chunk
-      if (raw.length > 10_000) req.destroy()
+      if (raw.length > limit) req.destroy()
     })
     req.on('end', () => {
       try {
@@ -1137,6 +1161,58 @@ function readJson(req: http.IncomingMessage): Promise<Record<string, unknown> | 
       }
     })
   })
+}
+
+// ---------- trang cài đặt: sửa tính cách (agents/<Role>.md) và chuyên môn (agents/<Role>_skills.md) ----------
+
+/** Các khoá phần đầu file tính cách được sửa trên trang cài đặt (id và tên giữ nguyên vì giao diện 3D dùng cố định) */
+const EDITABLE_META = ['chức_danh', 'sở_thích', 'cli'] as const
+
+/** Tách file .md thành phần đầu (giữ nguyên thứ tự khoá) và phần thân */
+function splitMd(file: string) {
+  const raw = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
+  const meta = (m?.[1] ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.match(/^([^:\s][^:]*):[ \t]*(.*)$/))
+    .filter((x): x is RegExpMatchArray => !!x)
+    .map((x) => [x[1].trim(), x[2].trim()] as [string, string])
+  return { meta, body: (m ? m[2] : raw).trim() }
+}
+
+function agentSettings(role: Role) {
+  const persona = splitMd(path.join(AGENTS_DIR, `${role}.md`))
+  const meta = Object.fromEntries(persona.meta)
+  const file = skillsFile(role)
+  return {
+    role,
+    name: meta['tên'] ?? NAMES[role],
+    meta: Object.fromEntries(EDITABLE_META.map((k) => [k, meta[k] ?? ''])),
+    persona: persona.body,
+    /** Nguyên văn agents/<Role>_skills.md, sửa tự do */
+    skills: fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim() : '',
+  }
+}
+
+/** Ghi lại 2 file của agent từ dữ liệu trang cài đặt; lượt nói tiếp theo dùng ngay nội dung mới */
+function saveAgentSettings(role: Role, body: Record<string, unknown>) {
+  const file = path.join(AGENTS_DIR, `${role}.md`)
+  const current = splitMd(file)
+  const incoming = typeof body.meta === 'object' && body.meta ? (body.meta as Record<string, unknown>) : {}
+  const meta = new Map(current.meta)
+  for (const k of EDITABLE_META) {
+    const v = incoming[k]
+    if (typeof v !== 'string') continue
+    const clean = v.replace(/[\r\n]+/g, ' ').trim().slice(0, 80)
+    if (k === 'cli' && !['claude', 'antigravity'].includes(clean)) continue
+    meta.set(k, clean)
+  }
+  const persona = typeof body.persona === 'string' ? body.persona.trim().slice(0, 20_000) : current.body
+  fs.writeFileSync(file, `---\n${[...meta].map(([k, v]) => `${k}: ${v}`).join('\n')}\n---\n\n${persona}\n`)
+
+  if (typeof body.skills === 'string') fs.writeFileSync(skillsFile(role), `${body.skills.trim().slice(0, 20_000)}\n`)
+  appendLog('Sếp', `sửa cài đặt tính cách / chuyên môn của ${who(role)}`)
+  return agentSettings(role)
 }
 
 /** Thông tin chi tiết một agent cho bảng "chi tiết" trên giao diện */
@@ -1171,6 +1247,16 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
 
   if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, engine: 'claude-cli' })
+
+  // ---- trang cài đặt ----
+  if (req.method === 'GET' && url.pathname === '/api/settings/agents') return send(res, 200, { agents: ROLES.map(agentSettings) })
+
+  if (req.method === 'POST' && url.pathname === '/api/settings/agent') {
+    const body = await readJson(req, 100_000) // tính cách dài tới 20 nghìn ký tự
+    const role = typeof body?.role === 'string' ? toRole(body.role) : undefined
+    if (!body || !role) return send(res, 400, { error: 'invalid_request' })
+    return send(res, 200, saveAgentSettings(role, body))
+  }
 
   // ---- dự án thật ----
   if (req.method === 'GET' && url.pathname === '/api/project') {

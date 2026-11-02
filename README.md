@@ -40,11 +40,11 @@ Sửa phần đầu file là có hiệu lực từ câu tiếp theo. Đổi mode
 
 Agent có dòng `cli: antigravity` ở đầu file persona thì nói bằng Antigravity CLI (`agy`) thay cho Claude Code. Hiện là **PM** (`agents/PM.md`) và **Tester** (`agents/Tester.md`); các agent khác ghi `cli: claude`.
 
-- Model của agy đặt ở các khoá `agy_smalltalk`, `agy_work`, `agy_plan`, `agy_boss` trong `agents/_models.md` (xem danh sách bằng `agy models`).
+- Model của agy đặt ở các khoá `agy_smalltalk`, `agy_work`, `agy_plan`, `agy_boss` trong `agents/_models.md` (xem danh sách bằng `agy models`). Hiện cả 4 khoá cùng là `gemini-3.8-flash-medium`, nên Lan và Tú luôn chạy một model.
 - Mỗi agent agy cũng có hội thoại riêng (`agy --conversation <id>`), nhớ qua các lượt. Lệnh mở nằm trong `office/sessions.md`.
 - agy chạy trong thư mục trống `office/agy-workspace` với `--sandbox`, để không đụng vào code dự án.
 - **Tiến trình chạy liên tục:** khi bật server, mỗi agent agy có sẵn một tiến trình `agy --input-format stream-json` chạy ngầm, nối vào đúng hội thoại của mình. Mỗi câu chỉ ghi một dòng JSON vào tiến trình đó, khoảng 4–5 giây thay vì 10–15 giây khi bật agy mỗi câu.
-  - Model gắn với tiến trình lúc khởi động. Câu cần model khác (vd họp dùng `agy_plan`) thì tiến trình khởi động lại với model đó trên cùng hội thoại (khoảng 8–10 giây), rồi tự chuyển về model `agy_work` ở chế độ nền sau 20 giây im lặng.
+  - Model gắn với tiến trình lúc khởi động (agy không đổi model khi đang chạy). Vì 4 khoá `agy_*` đang giống nhau nên tiến trình không bao giờ phải khởi động lại. Nếu đặt khác nhau thì câu cần model khác (vd họp dùng `agy_plan`) sẽ khởi động lại tiến trình trên cùng hội thoại (khoảng 8–10 giây), rồi tự chuyển về model `agy_work` ở chế độ nền sau 20 giây im lặng.
   - Tiến trình lỗi hoặc treo thì server quay về gọi agy từng lần, câu sau tự bật lại tiến trình. Tắt server thì các tiến trình agy tắt theo.
   - `office/chat.md` ghi kèm "chạy liên tục" hoặc "gọi từng lần" và số giây của từng câu.
 - Cần đăng nhập Antigravity sẵn trên máy. Hội thoại agy to nhanh hơn claude (mỗi lượt gửi kèm prompt agent khoảng 10 nghìn token), nên tốn quota hơn; dùng `reset @PM` khi cần.
@@ -57,7 +57,7 @@ Agent có dòng `cli: antigravity` ở đầu file persona thì nói bằng Anti
 | `agents/_rules.md` | Luật chung cho mọi agent (cách nói, độ dài, định dạng) |
 | `agents/_models.md` | Model Claude cho từng loại việc (tán gẫu dùng haiku...) |
 | `agents/PM.md`, `BE.md`, `FE.md`, `QA.md`, `Tester.md` | Tính cách, sở thích, quan hệ đồng nghiệp, vai trò (phần đầu có tên, chức danh, `cli:`). Sửa file là có hiệu lực từ câu tiếp theo |
-| `agents/PM_skills.md`, `BE_skills.md`... | Chuyên môn: bảng kỹ năng có mức sao ★, công cụ / tech stack, giới hạn. Server nối sau file tính cách khi gửi cho CLI; bảng chi tiết agent hiện mục "Chuyên môn" |
+| `agents/PM_skills.md`, `BE_skills.md`... | Chuyên môn: kỹ năng, công cụ / tech stack, giới hạn (viết tự do). Server nối sau file tính cách khi gửi cho CLI; sửa ở trang Cài đặt hoặc xem ở bảng chi tiết agent |
 | `agents/_project.md` | Dự án thật: thư mục, branch chính, model để code |
 | `office/inbox.md` | Hộp thư của bạn: thêm dòng `@FE nội dung` (hoặc `@all ...`) rồi lưu |
 | `office/chat/BE-QA.md`, `FE-Tester.md`... | Trò chuyện riêng giữa từng cặp agent (tạo khi hai người nói chuyện lần đầu) |
@@ -93,6 +93,15 @@ Nút **💬 Chat** trên thanh trên cùng mở cửa sổ chat (số đỏ là 
 - Đang có người soạn trả lời thì hiện "... đang soạn tin"; người que trong phòng cũng hiện bong bóng trả lời.
 - Danh sách nhóm nằm ở `office/groups.json`, tin nhắn ở `office/chat/Nhom-<id>.md`. Xoá nhóm chỉ bỏ nhóm khỏi danh sách, file tin nhắn vẫn giữ.
 - Mỗi tin của sếp, mỗi người trả lời là một lượt CLI (loại việc `boss`), nên nhóm đông thì chờ lâu hơn và tốn hơn.
+
+## Cài đặt
+
+Nút **⚙️ Cài đặt** trên thanh trên cùng mở trang cài đặt. Hiện có nhóm **Agent** (các nhóm Model, Dự án, Phòng sẽ thêm sau):
+
+- Chọn agent ở hàng trên, sửa **Thông tin** (chức danh, sở thích, CLI trò chuyện), **Tính cách** (phần thân của `agents/<Role>.md`), **Chuyên môn** (một ô soạn tự do, chính là toàn bộ file `agents/<Role>_skills.md`).
+- Bấm **Lưu** là ghi thẳng vào 2 file đó; agent dùng nội dung mới từ câu nói tiếp theo. Áp dụng cho mọi agent và mọi lượt gọi CLI (trò chuyện lẫn làm việc thật): session đã có từ trước thì server gửi bản hồ sơ mới kèm tin nhắn kế tiếp, vì Claude CLI giữ system prompt của lượt đầu khi nối tiếp session, còn agy không có system prompt. Đổi agent hoặc đóng trang khi chưa lưu thì được hỏi lại.
+- Tên và mã agent chưa sửa được ở đây vì giao diện 3D dùng cố định. Đổi CLI thì agent bắt đầu session trò chuyện mới.
+- Vẫn sửa tay 2 file được như trước; trang cài đặt đọc lại mỗi lần mở.
 
 ## Xem chi tiết agent
 

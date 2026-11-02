@@ -300,3 +300,18 @@ export async function realWork(w: WorkRequest): Promise<WorkResult | null> {
     return null
   }
 }
+
+// ---------- trang cài đặt ----------
+
+export interface AgentSettings {
+  role: Role
+  name: string
+  meta: { chức_danh: string; sở_thích: string; cli: string }
+  /** Phần thân agents/<Role>.md: tính cách, quan hệ đồng nghiệp, vai trò */
+  persona: string
+  /** Nguyên văn agents/<Role>_skills.md: chuyên môn, công cụ, giới hạn (viết tự do) */
+  skills: string
+}
+
+export const fetchAgentSettings = () => api<{ agents: AgentSettings[] }>('/api/settings/agents')
+export const saveAgentSettings = (s: AgentSettings) => api<AgentSettings>('/api/settings/agent', s)

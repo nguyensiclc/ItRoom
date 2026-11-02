@@ -3,6 +3,7 @@ import { useStore, type Stage, type Task } from '../store'
 import { resetAiBackoff } from '../sim/ai'
 import { AgentDetail } from './AgentDetail'
 import { ChatLauncher, TeamsChat } from './TeamsChat'
+import { Settings } from './Settings'
 
 const STAGES: { ids: Stage[]; label: string }[] = [
   { ids: ['todo', 'meeting'], label: 'Cần làm' },
@@ -50,6 +51,9 @@ export function Hud() {
           <i /> {aiEnabled ? AI_LABEL[aiStatus] : 'Kịch bản'}
         </button>
         <ChatLauncher />
+        <button className="settings-launch" onClick={() => useStore.getState().setSettingsOpen(true)} title="Cài đặt tính cách, chuyên môn của agent...">
+          ⚙️ Cài đặt
+        </button>
       </header>
 
       <section className="panel kanban">
@@ -77,6 +81,7 @@ export function Hud() {
 
       {selected && <AgentDetail key={selected} role={selected} />}
       <TeamsChat />
+      <Settings />
     </div>
   )
 }

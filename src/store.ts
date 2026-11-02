@@ -48,6 +48,9 @@ interface Store {
   /** Cửa sổ chat kiểu Teams: undefined = đóng, null = mở chưa chọn cuộc chat, hoặc id (`dm:BE`, `group:<id>`) */
   chat: string | null | undefined
   openChat: (id: string | null | undefined) => void
+  /** Trang cài đặt đang mở */
+  settingsOpen: boolean
+  setSettingsOpen: (open: boolean) => void
   speed: number
   /** Người dùng có bật AI không */
   aiEnabled: boolean
@@ -74,6 +77,8 @@ export const useStore = create<Store>((set) => ({
   selected: null,
   chat: undefined,
   openChat: (chat) => set({ chat }),
+  settingsOpen: false,
+  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   speed: 1,
   aiEnabled: true,
   aiStatus: 'unknown',

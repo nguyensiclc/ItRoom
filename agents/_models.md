@@ -4,9 +4,9 @@ smalltalk: haiku
 work: sonnet
 plan: opus
 boss: sonnet
-agy_smalltalk: gemini-3.8-flash-low
+agy_smalltalk: gemini-3.8-flash-medium
 agy_work: gemini-3.8-flash-medium
-agy_plan: gemini-3.8-flash-high
+agy_plan: gemini-3.8-flash-medium
 agy_boss: gemini-3.8-flash-medium
 ---
 
@@ -31,3 +31,5 @@ Agent nào có dòng `cli: antigravity` ở đầu file persona (hiện là `PM.
 và dùng các khoá `agy_*` ở trên. Xem danh sách model bằng lệnh `agy models`
 (ví dụ `gemini-3.8-flash-low/medium/high`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`).
 Đổi `cli:` của một agent thì agent đó bắt đầu session mới (hai CLI không dùng chung trí nhớ).
+
+Hiện cả 4 khoá `agy_*` dùng chung `gemini-3.8-flash-medium`: agent agy luôn chạy một model, tiến trình chạy liên tục không phải khởi động lại để đổi model. agy không đổi được model khi tiến trình đang chạy (lệnh `/model` của agy chỉ mở bảng chọn trong terminal), nên nếu đặt các khoá khác nhau thì mỗi lần đổi loại việc tiến trình phải khởi động lại (8-10 giây).
