@@ -1,6 +1,6 @@
 import { useRef, type ReactNode, type RefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { MathUtils, type Group } from 'three'
+import { MathUtils, Vector3, type Group } from 'three'
 import type { Hobby, Role } from '../data/agents'
 import type { AnimState } from '../store'
 import { motions } from '../sim/motion'
@@ -10,6 +10,8 @@ const FOREARM = 0.26
 const THIGH = 0.45
 const SHIN = 0.42
 const HIP_Y = 0.9
+const _l = new Vector3()
+const _r = new Vector3()
 const SIT_DROP = 0.4 // hạ hông từ 0.9 xuống 0.5 khi ngồi ghế
 const SHOULDER_X = 0.16
 const HEAD_SCALE = 1.2 // đầu to kiểu chibi; phụ kiện vẽ theo đầu bán kính 0.14 rồi phóng theo
@@ -272,12 +274,12 @@ function Outfit({ role, color }: { role: Role; color: string }) {
 
 const RUBIK_COLORS = ['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#f8fafc']
 
-/** Đồ vật cầm trên tay khi ngồi chơi, đặt theo toạ độ hông (trước ngực, ngang tay) */
+/** Đồ vật cầm trên tay khi ngồi chơi; mỗi frame được đặt vào giữa hai bàn tay (bỏng ngô: tay trái) */
 function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null> }) {
   switch (hobby) {
     case 'read': // sách mở hình chữ V
       return (
-        <group position={[0, 0.27, 0.42]} rotation={[-0.7, 0, 0]}>
+        <group rotation={[-0.7, 0, 0]}>
           {[-1, 1].map((s) => (
             <mesh key={s} position={[s * 0.07, 0, 0]} rotation={[0, s * -0.35, 0]}>
               <boxGeometry args={[0.14, 0.2, 0.012]} />
@@ -292,7 +294,7 @@ function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null
       )
     case 'game': // máy chơi game cầm tay
       return (
-        <group position={[0, 0.24, 0.44]} rotation={[-0.5, 0, 0]}>
+        <group rotation={[-0.5, 0, 0]}>
           <mesh>
             <boxGeometry args={[0.26, 0.035, 0.1]} />
             <meshStandardMaterial color="#1f2937" />
@@ -311,7 +313,7 @@ function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null
       )
     case 'rubik':
       return (
-        <group ref={spin} position={[0, 0.24, 0.44]}>
+        <group ref={spin}>
           <mesh>
             <boxGeometry args={[0.1, 0.1, 0.1]} />
             {RUBIK_COLORS.map((c, i) => (
@@ -322,7 +324,7 @@ function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null
       )
     case 'movie': // xô bỏng ngô trên đùi
       return (
-        <group position={[0.15, 0.12, 0.26]}>
+        <group position={[0.07, 0.04, 0]}>
           <mesh>
             <cylinderGeometry args={[0.07, 0.05, 0.13, 12]} />
             <meshStandardMaterial color="#dc2626" />
@@ -362,6 +364,10 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
   const rThigh = useRef<Group>(null)
   const rShin = useRef<Group>(null)
   const sit = useRef(1)
+  const hip = useRef<Group>(null)
+  const prop = useRef<Group>(null)
+  const lHand = useRef<Group>(null)
+  const rHand = useRef<Group>(null)
 
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime + phase
@@ -406,13 +412,19 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
         ra = [-0.6, -0.18]
         lf = rf = -0.9
         if (hobby === 'read') {
+          la = [-0.6, 0.08]
+          ra = [-0.6, -0.08]
           hx = 0.4
           rf = -0.9 + Math.max(0, Math.sin(t * 0.8)) ** 12 * 0.5 // thỉnh thoảng lật trang
         } else if (hobby === 'game') {
+          la = [-0.6, 0.06]
+          ra = [-0.6, -0.06]
           hx = 0.35
           lf = -0.9 + Math.sin(t * 26) * 0.05
           rf = -0.9 + Math.sin(t * 23 + 1) * 0.05
         } else if (hobby === 'rubik') {
+          la = [-0.6, 0.2]
+          ra = [-0.6, -0.2]
           hx = 0.3
           lf = rf = -1.0
           if (spin.current) spin.current.rotation.set(t * 0.9, t * 1.3, 0)
@@ -467,6 +479,16 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
     // chớp mắt vài giây một lần
     if (eyes.current) eyes.current.scale.y = (t * 0.27) % 1 < 0.035 ? 0.1 : 1
     if (body.current) body.current.position.y = -SIT_DROP * sit.current + bob
+
+    // Đồ vật bám theo bàn tay: chỉ hiện khi đã ngồi hẳn xuống để chơi
+    const p = prop.current
+    if (p && hip.current && lHand.current && rHand.current) {
+      p.visible = pose === 'hobby' && sit.current > 0.9
+      hip.current.worldToLocal(lHand.current.getWorldPosition(_l))
+      if (hobby === 'movie' || hobby === 'read') p.position.copy(_l) // xô bỏng ngô cầm tay trái; sách giữ bằng tay trái để tay phải lật trang
+      else p.position.copy(_l).add(hip.current.worldToLocal(rHand.current.getWorldPosition(_r))).multiplyScalar(0.5)
+      if (hobby === 'read') p.position.x = 0 // giữa hai tay, không lệch khi tay phải lật trang
+    }
   })
 
   const arm = (jref: RefObject<Group | null>, fore: RefObject<Group | null>, side: number) => (
@@ -478,6 +500,7 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
       <Limb len={UPPER_ARM} radius={0.048} color={color} />
       <Joint jref={fore} position={[0, -UPPER_ARM, 0]}>
         <Limb len={FOREARM} radius={0.038} color={look.skin} />
+        <group ref={side < 0 ? lHand : rHand} position={[0, -FOREARM - 0.02, 0]} />
         <mesh position={[0, -FOREARM - 0.02, 0]} castShadow>
           <sphereGeometry args={[0.048, 12, 10]} />
           <meshStandardMaterial color={look.skin} roughness={0.7} />
@@ -502,7 +525,7 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
 
   return (
     <group ref={body}>
-      <group position={[0, HIP_Y, 0]}>
+      <group ref={hip} position={[0, HIP_Y, 0]}>
         {/* thân áo */}
         <mesh position={[0, 0.32, 0]} scale={[1, 1, 0.82]} castShadow>
           <capsuleGeometry args={[0.13, 0.27, 8, 20]} />
@@ -533,7 +556,11 @@ export function StickFigure({ role, color, hobby, state, phase }: Props) {
           </group>
         </group>
 
-        {state === 'hobby' && <HobbyProp hobby={hobby} spin={spin} />}
+        {state === 'hobby' && (
+          <group ref={prop} visible={false}>
+            <HobbyProp hobby={hobby} spin={spin} />
+          </group>
+        )}
 
         {arm(lArm, lFore, -1)}
         {arm(rArm, rFore, 1)}
