@@ -152,6 +152,7 @@ interface OfficeEvent {
   type: 'user' | 'thinking' | 'reply' | 'error'
   role: Role
   text: string
+  group?: string
 }
 
 const chatTimers: Partial<Record<Role, ReturnType<typeof setTimeout>>> = {}
@@ -174,10 +175,11 @@ export function startEventPolling() {
         if (since >= 0) {
           const { pushLog } = useStore.getState()
           for (const e of events) {
-            if (e.type === 'user') pushLog('Sếp', e.text.startsWith('@all') ? e.text : `@${e.role} ${e.text}`)
+            const where = e.group ? `[${e.group}] ` : ''
+            if (e.type === 'user') pushLog('Sếp', e.group ? `${where}${e.text}` : e.text.startsWith('@all') ? e.text : `@${e.role} ${e.text}`)
             if (e.type === 'thinking') showChat(e.role, '💭 đang soạn trả lời sếp...', null)
             if (e.type === 'reply') {
-              pushLog(e.role, `↩ ${e.text}`)
+              pushLog(e.role, `↩ ${where}${e.text}`)
               showChat(e.role, e.text, 6000 + e.text.length * 60)
             }
             if (e.type === 'error') showChat(e.role, `⚠️ ${e.text}`, 4000)
@@ -204,7 +206,7 @@ export interface AgentDetail {
   session: { id: string; started: string; turns: number; open: string } | null
   worker: { alive: boolean; model: string | null } | null
   status: string | null
-  channels: { name: string; count: number; unread: number; recent: { time: string; who: string; text: string }[] }[]
+  channels: { name: string; label?: string; count: number; unread: number; recent: { time: string; who: string; text: string }[] }[]
 }
 
 /** Chi tiết agent từ server (persona, session CLI, model, kênh chat); null khi server không chạy */
@@ -216,3 +218,40 @@ export async function fetchAgentDetail(role: Role): Promise<AgentDetail | null> 
     return null
   }
 }
+
+// ---------- cửa sổ chat kiểu Teams ----------
+
+export interface ChatMessage {
+  time: string
+  /** 'boss' = sếp, '' = dòng hệ thống */
+  from: Role | 'boss' | ''
+  text: string
+}
+
+export interface ChatSummary {
+  /** `dm:BE` hoặc `group:<id>` */
+  id: string
+  kind: 'dm' | 'group'
+  name: string
+  members: Role[]
+  count: number
+  last: ChatMessage | null
+  typing: Role[]
+}
+
+async function api<T>(url: string, body?: unknown): Promise<{ data?: T; error?: string }> {
+  try {
+    const res = await fetch(url, body === undefined ? undefined : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string }
+    return res.ok ? { data } : { error: data.error ?? `Lỗi ${res.status}` }
+  } catch {
+    return { error: 'Không kết nối được server (npm run server)' }
+  }
+}
+
+export const fetchChats = () => api<{ chats: ChatSummary[] }>('/api/chats')
+export const fetchMessages = (id: string) => api<{ messages: ChatMessage[]; typing: Role[] }>(`/api/chats/messages?id=${encodeURIComponent(id)}`)
+export const sendChatMessage = (id: string, text: string) => api<{ ok: true }>('/api/chats/send', { id, text })
+export const createGroup = (name: string, members: Role[]) => api<{ id: string }>('/api/groups', { name, members })
+export const updateGroup = (id: string, patch: { name?: string; members?: Role[] }) => api<{ id: string }>('/api/groups/update', { id, ...patch })
+export const deleteGroup = (id: string) => api<{ ok: true }>('/api/groups/delete', { id })

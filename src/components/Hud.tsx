@@ -3,6 +3,7 @@ import { useStore, type AnimState, type Stage, type Task } from '../store'
 import { useState } from 'react'
 import { resetAiBackoff, sendToInbox } from '../sim/ai'
 import { AgentDetail } from './AgentDetail'
+import { ChatLauncher, TeamsChat } from './TeamsChat'
 
 const STAGES: { ids: Stage[]; label: string }[] = [
   { ids: ['todo', 'meeting'], label: 'Cần làm' },
@@ -79,6 +80,7 @@ export function Hud() {
         >
           <i /> {aiEnabled ? AI_LABEL[aiStatus] : 'Kịch bản'}
         </button>
+        <ChatLauncher />
       </header>
 
       <section className="panel kanban">
@@ -147,6 +149,7 @@ export function Hud() {
       </section>
 
       {selected && <AgentDetail key={selected} role={selected} />}
+      <TeamsChat />
 
       <section className="agents">
         {AGENTS.map((a) => {

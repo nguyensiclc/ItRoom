@@ -65,6 +65,18 @@ Agent có dòng `cli: antigravity` ở đầu file persona thì nói bằng Anti
 
 Mỗi agent chỉ nhận tin của những kênh mình tham gia (cặp riêng của mình, kênh với sếp, kênh team), nên chuyện riêng giữa hai người không lộ sang người khác.
 
+## Chat kiểu Teams
+
+Nút **💬 Chat** trên thanh trên cùng mở cửa sổ chat (số đỏ là tin chưa xem):
+
+- **Trò chuyện riêng**: nhắn với từng người. Dùng chung file `office/chat/Sep-<Role>.md` với tin nhắn qua `inbox.md`, nên lịch sử cũ vẫn hiện. Bảng chi tiết agent có nút "💬 Nhắn" mở thẳng cuộc chat này.
+- **Nhóm**: "＋ Nhóm mới", đặt tên, chọn bất kỳ agent nào. Nút "👥 Thành viên" để đổi tên, thêm hoặc bớt người. Thêm hoặc bớt người thì nhóm có dòng thông báo, người mới vào đọc được các tin gần nhất.
+  - Không gọi tên ai thì cả nhóm lần lượt trả lời, người sau đọc được câu người trước.
+  - Gõ `@Khoa` hoặc `@FE` (hoặc bấm nút "Gọi riêng") thì chỉ người được gọi trả lời.
+- Đang có người soạn trả lời thì hiện "... đang soạn tin"; người que trong phòng cũng hiện bong bóng trả lời.
+- Danh sách nhóm nằm ở `office/groups.json`, tin nhắn ở `office/chat/Nhom-<id>.md`. Xoá nhóm chỉ bỏ nhóm khỏi danh sách, file tin nhắn vẫn giữ.
+- Mỗi tin của sếp, mỗi người trả lời là một lượt CLI (loại việc `boss`), nên nhóm đông thì chờ lâu hơn và tốn hơn.
+
 ## Xem chi tiết agent
 
 Bấm vào người que hoặc thẻ agent ở góc dưới bên phải để mở bảng chi tiết:

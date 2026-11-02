@@ -116,13 +116,39 @@ function appendLog(speaker: string, text: string) {
   fs.appendFileSync(CHAT_FILE, mdLine(speaker, text))
 }
 
-/** Kênh trò chuyện: một đồng đội, cả team, hoặc sếp (người dùng) */
-type Channel = Role | 'team' | 'boss'
+// ---------- nhóm chat do sếp tạo (office/groups.json, tin nhắn ở office/chat/Nhom-<id>.md) ----------
+
+const GROUPS_FILE = path.join(ROOT, 'office', 'groups.json')
+
+interface Group {
+  id: string
+  name: string
+  members: Role[]
+  created: string
+}
+
+let groups: Group[] = []
+try {
+  groups = JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf8')) as Group[]
+} catch {
+  // chưa có nhóm nào
+}
+const saveGroups = () => fs.writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2))
+const groupFile = (id: string) => path.join(CHANNEL_DIR, `Nhom-${id}.md`)
+const groupById = (id: string) => groups.find((g) => g.id === id)
+const groupTitle = (g: Group) => `Nhóm chat "${g.name}" (Sếp, ${g.members.map(who).join(', ')})`
+
+/** Kênh trò chuyện: một đồng đội, cả team, sếp (người dùng), hoặc một nhóm chat sếp tạo */
+type Channel = Role | 'team' | 'boss' | `group:${string}`
 
 function channelFile(role: Role, channel: Channel) {
+  if (channel.startsWith('group:')) {
+    const g = groupById(channel.slice(6))
+    return { file: groupFile(channel.slice(6)), title: g ? groupTitle(g) : 'Nhóm chat' }
+  }
   if (channel === 'team') return { file: path.join(CHANNEL_DIR, 'team.md'), title: 'Kênh chung của team (thông báo, standup)' }
   if (channel === 'boss') return { file: path.join(CHANNEL_DIR, `Sep-${role}.md`), title: `Trò chuyện riêng: Sếp ↔ ${who(role)}` }
-  const [a, b] = [role, channel].sort((x, y) => ROLES.indexOf(x) - ROLES.indexOf(y))
+  const [a, b] = [role, channel as Role].sort((x, y) => ROLES.indexOf(x) - ROLES.indexOf(y))
   return { file: path.join(CHANNEL_DIR, `${a}-${b}.md`), title: `Trò chuyện riêng: ${who(a)} ↔ ${who(b)}` }
 }
 
@@ -573,7 +599,15 @@ function speak(role: Role, situation: string, channel?: Channel, kind: Kind = 'w
     saveSessions()
 
     if (channel) appendChannel(role, channel, who(role), line.text)
-    const to = !channel ? '' : channel === 'team' ? ' → team' : channel === 'boss' ? ' → Sếp' : ` → ${channel}`
+    const to = !channel
+      ? ''
+      : channel === 'team'
+        ? ' → team'
+        : channel === 'boss'
+          ? ' → Sếp'
+          : channel.startsWith('group:')
+            ? ` → nhóm ${groupById(channel.slice(6))?.name ?? ''}`
+            : ` → ${channel}`
     const modelLabel = `${engine}:${model ?? 'mặc định'}`
     appendLog(`${who(role)}${to}`, `${line.text} _(${kind} · ${modelLabel} · ${line.via} · ${seconds}s)_`)
     console.log(`[${role}] ${modelLabel} · ${line.via} · ${seconds}s`)
@@ -588,11 +622,13 @@ interface OfficeEvent {
   type: 'user' | 'thinking' | 'reply' | 'error'
   role: Role
   text: string
+  /** Tên nhóm chat, khi tin nhắn nằm trong một nhóm */
+  group?: string
 }
 const events: OfficeEvent[] = []
 let nextEventId = 1
-function emit(type: OfficeEvent['type'], role: Role, text = '') {
-  events.push({ id: nextEventId++, type, role, text })
+function emit(type: OfficeEvent['type'], role: Role, text = '', group?: string) {
+  events.push({ id: nextEventId++, type, role, text, group })
   if (events.length > 200) events.shift()
 }
 
@@ -607,6 +643,139 @@ async function answerBoss(role: Role, message: string) {
     console.error((e as Error).message)
     emit('error', role, 'Không gọi được Claude CLI')
   }
+}
+
+// ---------- cửa sổ chat kiểu Teams: chat riêng (Sep-<Role>.md) và nhóm chat ----------
+
+/** Ai đang soạn trả lời trong từng cuộc chat (`dm:BE`, `group:<id>`) */
+const typing = new Map<string, Set<Role>>()
+function setTyping(chat: string, role: Role, on: boolean) {
+  const set = typing.get(chat) ?? new Set<Role>()
+  if (on) set.add(role)
+  else set.delete(role)
+  typing.set(chat, set)
+}
+
+interface ChatMessage {
+  time: string
+  /** 'boss' = sếp, '' = dòng hệ thống (thêm/bớt thành viên) */
+  from: Role | 'boss' | ''
+  text: string
+}
+
+function parseMessage(line: string): ChatMessage {
+  const m = line.match(/^- (\S+) \*\*(.+?):\*\* (.*)$/)
+  if (!m) return { time: '', from: '', text: line.slice(2) }
+  const speaker = m[2] === 'Sếp' ? 'boss' : (toRole(m[2].split(' ')[0]) ?? '')
+  return { time: m[1], from: speaker, text: m[3] }
+}
+
+const chatFile = (chat: string) =>
+  chat.startsWith('group:') ? groupFile(chat.slice(6)) : path.join(CHANNEL_DIR, `Sep-${chat.slice(3)}.md`)
+
+function chatList() {
+  const item = (id: string, kind: 'dm' | 'group', name: string, members: Role[]) => {
+    const all = messages(chatFile(id))
+    return { id, kind, name, members, count: all.length, last: all.length ? parseMessage(all.at(-1)!) : null, typing: [...(typing.get(id) ?? [])] }
+  }
+  return [
+    ...groups.map((g) => item(`group:${g.id}`, 'group', g.name, g.members)),
+    ...ROLES.map((r) => item(`dm:${r}`, 'dm', NAMES[r], [r])),
+  ]
+}
+
+// Tin trong cùng một cuộc chat được xử lý lần lượt
+const chatChains = new Map<string, Promise<unknown>>()
+function inChat(chat: string, fn: () => Promise<void>) {
+  const next = (chatChains.get(chat) ?? Promise.resolve()).then(fn, fn)
+  chatChains.set(chat, next.catch(() => {}))
+}
+
+/** Ai trong nhóm được sếp gọi tên (@FE, @Khoa...); không gọi ai thì cả nhóm trả lời */
+function mentioned(text: string, members: Role[]) {
+  const tags = [...text.matchAll(/@([\p{L}\w]+)/gu)].map((m) => m[1].toLowerCase())
+  return members.filter((r) => tags.includes(r.toLowerCase()) || tags.includes(NAMES[r].toLowerCase()))
+}
+
+function sendChat(chat: string, text: string): string | null {
+  if (chat.startsWith('dm:')) {
+    const role = toRole(chat.slice(3))
+    if (!role) return 'Không có agent này'
+    appendLog(`Sếp → ${role}`, text)
+    appendChannel(role, 'boss', 'Sếp', text)
+    emit('user', role, text)
+    inChat(chat, async () => {
+      setTyping(chat, role, true)
+      try {
+        await answerBoss(role, text)
+      } finally {
+        setTyping(chat, role, false)
+      }
+    })
+    return null
+  }
+  const g = groupById(chat.slice(6))
+  if (!g) return 'Nhóm không còn tồn tại'
+  if (g.members.length === 0) return 'Nhóm chưa có thành viên'
+  appendLog(`Sếp → nhóm ${g.name}`, text)
+  appendChannel(g.members[0], chat as Channel, 'Sếp', text)
+  emit('user', g.members[0], text, g.name)
+  const called = mentioned(text, g.members)
+  const responders = called.length ? called : g.members
+  inChat(chat, async () => {
+    // lần lượt để người sau đọc được câu người trước trong nhóm
+    for (const role of responders) {
+      if (!groupById(g.id)?.members.includes(role)) continue // bị bớt khỏi nhóm trong lúc chờ
+      setTyping(chat, role, true)
+      emit('thinking', role)
+      try {
+        const situation =
+          `Sếp vừa nhắn trong ${groupTitle(g)}: "${text}". ` +
+          (called.length ? 'Sếp gọi tên bạn. ' : '') +
+          'Trả lời trong nhóm; nếu đồng đội đã nói rồi thì đừng lặp lại, có thể đáp lại ý của họ.'
+        const { text: reply } = await speak(role, situation, chat as Channel, 'boss')
+        emit('reply', role, reply, g.name)
+      } catch (e) {
+        console.error((e as Error).message)
+        emit('error', role, 'Không gọi được CLI')
+      } finally {
+        setTyping(chat, role, false)
+      }
+    }
+  })
+  return null
+}
+
+function cleanMembers(raw: unknown): Role[] {
+  if (!Array.isArray(raw)) return []
+  return ROLES.filter((r) => raw.some((x) => typeof x === 'string' && toRole(x) === r))
+}
+
+function createGroup(name: string, members: Role[]) {
+  const g: Group = { id: Date.now().toString(36), name, members, created: new Date().toLocaleString('vi-VN') }
+  groups.push(g)
+  saveGroups()
+  fs.writeFileSync(groupFile(g.id), `# ${groupTitle(g)}\n\n`)
+  fs.appendFileSync(groupFile(g.id), mdLine('Hệ thống', `Sếp tạo nhóm "${name}" với ${members.map(who).join(', ')}`))
+  appendLog('Sếp', `tạo nhóm chat "${name}" (${members.join(', ')})`)
+  return g
+}
+
+function updateGroup(g: Group, name: string | undefined, members: Role[] | undefined) {
+  const notes: string[] = []
+  if (name && name !== g.name) {
+    notes.push(`Sếp đổi tên nhóm thành "${name}"`)
+    g.name = name
+  }
+  if (members) {
+    const added = members.filter((r) => !g.members.includes(r))
+    const removed = g.members.filter((r) => !members.includes(r))
+    if (added.length) notes.push(`Sếp thêm ${added.map(who).join(', ')} vào nhóm`)
+    if (removed.length) notes.push(`Sếp bớt ${removed.map(who).join(', ')} khỏi nhóm`)
+    g.members = members
+  }
+  saveGroups()
+  for (const n of notes) fs.appendFileSync(groupFile(g.id), mdLine('Hệ thống', n))
 }
 
 // Việc sếp giao. Giữ đến khi giao diện báo làm xong; nếu trang đang làm bị đóng/tải lại
@@ -726,15 +895,19 @@ function agentDetail(role: Role) {
   const s = sessions[role]
   const w = workers.get(role)
   const channels = (fs.existsSync(CHANNEL_DIR) ? fs.readdirSync(CHANNEL_DIR) : [])
-    .filter((n) => n === 'team.md' || n === `Sep-${role}.md` || n.replace(/\.md$/, '').split('-').includes(role))
+    .filter((n) => {
+      if (n.startsWith('Nhom-')) return !!groupById(n.slice(5, -3))?.members.includes(role)
+      return n === 'team.md' || n === `Sep-${role}.md` || n.replace(/\.md$/, '').split('-').includes(role)
+    })
     .map((n) => {
+      const label = n.startsWith('Nhom-') ? `Nhóm ${groupById(n.slice(5, -3))?.name}` : undefined
       const all = messages(path.join(CHANNEL_DIR, n))
       const recent = all.slice(-3).map((l) => {
         const m = l.match(/^- (\S+) \*\*(.+?):\*\* (.*)$/)
         return m ? { time: m[1], who: m[2], text: m[3] } : { time: '', who: '', text: l.slice(2) }
       })
       const unreadCount = s ? Math.max(0, all.length - (s.seen[n] ?? 0)) : 0
-      return { name: n, count: all.length, unread: unreadCount, recent }
+      return { name: n, label, count: all.length, unread: unreadCount, recent }
     })
   return {
     role,
@@ -767,6 +940,49 @@ const server = http.createServer(async (req, res) => {
     const role = toRole(url.searchParams.get('role') ?? '')
     if (!role) return send(res, 400, { error: 'role không hợp lệ' })
     return send(res, 200, agentDetail(role))
+  }
+
+  // ---- cửa sổ chat ----
+  if (req.method === 'GET' && url.pathname === '/api/chats') return send(res, 200, { chats: chatList() })
+
+  if (req.method === 'GET' && url.pathname === '/api/chats/messages') {
+    const chat = url.searchParams.get('id') ?? ''
+    const ok = chat.startsWith('dm:') ? !!toRole(chat.slice(3)) : !!groupById(chat.slice(6))
+    if (!ok) return send(res, 404, { error: 'Không có cuộc chat này' })
+    return send(res, 200, { messages: messages(chatFile(chat)).slice(-200).map(parseMessage), typing: [...(typing.get(chat) ?? [])] })
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/chats/send') {
+    const body = await readJson(req)
+    const chat = typeof body?.id === 'string' ? body.id : ''
+    const text = typeof body?.text === 'string' ? body.text.replace(/\s+/g, ' ').trim() : ''
+    if (!text || text.length > 500) return send(res, 400, { error: 'Tin nhắn trống hoặc dài quá 500 ký tự' })
+    const err = sendChat(chat, text)
+    return err ? send(res, 400, { error: err }) : send(res, 200, { ok: true })
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/groups')) {
+    const body = await readJson(req)
+    const name = typeof body?.name === 'string' ? body.name.replace(/\s+/g, ' ').trim().slice(0, 40) : undefined
+    const members = body?.members === undefined ? undefined : cleanMembers(body.members)
+    if (url.pathname === '/api/groups') {
+      if (!name || !members?.length) return send(res, 400, { error: 'Cần tên nhóm và ít nhất một thành viên' })
+      return send(res, 200, createGroup(name, members))
+    }
+    const g = typeof body?.id === 'string' ? groupById(body.id) : undefined
+    if (!g) return send(res, 404, { error: 'Không có nhóm này' })
+    if (url.pathname === '/api/groups/update') {
+      if (members && !members.length) return send(res, 400, { error: 'Nhóm cần ít nhất một thành viên' })
+      updateGroup(g, name, members)
+      return send(res, 200, g)
+    }
+    if (url.pathname === '/api/groups/delete') {
+      // giữ lại file Nhom-<id>.md làm lưu trữ, chỉ bỏ nhóm khỏi danh sách
+      groups = groups.filter((x) => x.id !== g.id)
+      saveGroups()
+      appendLog('Sếp', `xoá nhóm chat "${g.name}"`)
+      return send(res, 200, { ok: true })
+    }
   }
 
   if (req.method === 'GET' && url.pathname === '/api/events') {

@@ -69,6 +69,9 @@ export function AgentDetail({ role }: { role: Role }) {
           </strong>
           <small>{detail?.title ?? def.title}</small>
         </div>
+        <button className="dm" onClick={() => useStore.getState().openChat(`dm:${role}`)} title={`Nhắn riêng cho ${def.name}`}>
+          💬 Nhắn
+        </button>
         <button className="close" onClick={() => select(null)} aria-label="Đóng">
           ×
         </button>
@@ -133,7 +136,7 @@ export function AgentDetail({ role }: { role: Role }) {
             <ul className="channels">
               {detail.channels.map((c) => (
                 <li key={c.name} title={c.recent.map((m) => `${m.time} ${m.who}: ${m.text}`).join('\n')}>
-                  <span>{channelLabel(c.name, role)}</span>
+                  <span>{c.label ?? channelLabel(c.name, role)}</span>
                   <small>
                     {c.count} tin{c.unread > 0 && <b> · {c.unread} chưa đọc</b>}
                   </small>
