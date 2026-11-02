@@ -1,6 +1,9 @@
 node_modules
 dist
 .env
-# nhật ký sinh ra khi chạy
+# sinh ra khi chạy
 office/chat.md
 office/chat/
+office/sessions.json
+office/sessions.md
+office/agy-workspace/

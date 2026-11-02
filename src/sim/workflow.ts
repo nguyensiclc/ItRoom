@@ -4,7 +4,7 @@ import {
 } from '../data/agents'
 import { useStore, type Area, type Stage } from '../store'
 import { walkPath, walkTo } from './motion'
-import { aiLine, markAssignmentDone, startAssignmentPolling, startEventPolling, startStatusSync, type Assignment, type Channel } from './ai'
+import { aiLine, markAssignmentDone, startAssignmentPolling, startEventPolling, startStatusSync, type Assignment, type Channel, type Kind } from './ai'
 
 // Agent chỉ làm việc khi sếp giao (qua office/inbox.md hoặc ô giao việc trên giao diện):
 // - giao @team ...  → việc chung: cả team họp, PM phân công, rồi BE/FE → QA → Tester
@@ -32,9 +32,9 @@ async function say(id: Role, text: string, ms = 2200, log = true) {
  * Hỏi Claude câu thoại (hiện 💭 trong lúc chờ), rồi nói ra. Lỗi/tắt AI thì dùng `fallback`.
  * `channel`: nói với ai (file trò chuyện riêng của cặp đó), 'team' hoặc 'boss'; bỏ trống = tự lẩm bẩm.
  */
-async function talk(id: Role, situation: string, fallback: string, ms?: number, channel?: Channel) {
+async function talk(id: Role, situation: string, fallback: string, ms?: number, channel?: Channel, kind: Kind = 'work') {
   S().setAgent(id, { bubble: '💭 ...' })
-  const { text } = await aiLine(id, situation, { text: fallback, title: '' }, channel)
+  const { text } = await aiLine(id, situation, { text: fallback, title: '' }, channel, kind)
   await say(id, text, ms)
 }
 
@@ -139,7 +139,7 @@ async function teamMeeting(taskId: number, request: string): Promise<{ title: st
       `Đang họp ở bàn họp. ${brief} Bạn mở cuộc họp: tóm tắt yêu cầu. Đặt tên task ngắn gọn (tối đa 6 từ) vào "title", ` +
         'chọn "area": BE nếu chỉ cần backend, FE nếu chỉ cần giao diện, FULLSTACK nếu cần cả hai.',
       { title: '', text: 'Họp nhanh nhé, sếp vừa giao việc mới cho team! 📋', area: 'FULLSTACK' },
-      'team',
+      'team', 'plan',
     )
     const title = opening.title || S().tasks.find((t) => t.id === taskId)!.title
     const area: Area = isArea(opening.area) ? opening.area : 'FULLSTACK'
@@ -150,7 +150,7 @@ async function teamMeeting(taskId: number, request: string): Promise<{ title: st
     const ctx = `Đang họp ở bàn họp. ${brief} PM đặt tên task "${title}", phần việc: ${AREA_LABEL[area]}.`
     const speak = async (id: Role, situation: string, fallback: string) => {
       S().setAgent(id, { state: 'talk' })
-      await talk(id, `${ctx} ${situation}`, fallback, undefined, 'team')
+      await talk(id, `${ctx} ${situation}`, fallback, undefined, 'team', 'plan')
       S().setAgent(id, { state: 'idle' })
     }
     if (area !== 'FE') await speak('BE', 'Nêu ngắn gọn phần backend bạn sẽ làm (API, dữ liệu).', 'Phần backend để mình lo API nhé.')
@@ -274,7 +274,7 @@ async function teamTaskFlow(taskId: number, request: string) {
     'PM',
     `Báo cáo sếp: việc chung "${request}" (task "${title}") đã hoàn thành, qua review và test${bugs ? `, đã sửa ${bugs} bug` : ''}.`,
     `Dạ sếp, task "${title}" đã xong ạ ✅`,
-    undefined, 'boss',
+    undefined, 'boss', 'boss',
   )
   S().setAgent('PM', { taskId: null })
   settle('PM')
@@ -295,7 +295,7 @@ async function runPersonalTask(taskId: number, who: Role, request: string) {
       `Sếp giao riêng cho bạn: "${request}". Đặt tên ngắn (tối đa 6 từ) cho việc này vào "title", ` +
         'và trả lời sếp là bạn nhận việc, nói ngắn bạn sẽ làm thế nào.',
       { title: '', text: 'Dạ em nhận việc ạ, làm ngay! 💪' },
-      'boss',
+      'boss', 'boss',
     )
     if (ack.title) S().updateTask(taskId, { title: ack.title })
     const title = ack.title || request
@@ -306,7 +306,7 @@ async function runPersonalTask(taskId: number, who: Role, request: string) {
       await talk(who, `Bạn đang làm việc sếp giao riêng: "${request}" (task "${title}"), ${step}. Lẩm bẩm một câu.`, 'Đang làm... ⌨️', 1800)
     }
     await wait(2500)
-    await talk(who, `Bạn vừa làm xong việc sếp giao riêng: "${request}". Báo cáo kết quả ngắn gọn cho sếp.`, 'Dạ sếp, em làm xong rồi ạ ✅', undefined, 'boss')
+    await talk(who, `Bạn vừa làm xong việc sếp giao riêng: "${request}". Báo cáo kết quả ngắn gọn cho sếp.`, 'Dạ sếp, em làm xong rồi ạ ✅', undefined, 'boss', 'boss')
     S().updateTask(taskId, { stage: 'done' })
     S().setAgent(who, { taskId: null })
     settle(who)
@@ -358,15 +358,15 @@ async function smallTalk(from: Role, to: Role) {
       `Bạn đang rảnh việc (vừa ${HOBBIES[a.hobby].label}), sang khoang ${b.name} (${to}) đang ${HOBBIES[b.hobby].label}. ` +
         'Mở đầu câu chuyện phiếm về sở thích hoặc chuyện ngoài công việc.',
       `${b.name} ơi, đang ${HOBBIES[b.hobby].label} gì đó? 😄`,
-      undefined, to,
+      undefined, to, 'smalltalk',
     )
     await talk(
       to,
       `Bạn đang ${HOBBIES[b.hobby].label} lúc rảnh thì ${a.name} (${from}) sang bắt chuyện. Trả lời thân thiện, kể về sở thích của bạn.`,
       `Đang ${HOBBIES[b.hobby].label} cho đỡ căng thẳng nè!`,
-      1800, from,
+      1800, from, 'smalltalk',
     )
-    await talk(from, `Bạn kết thúc câu chuyện phiếm với ${b.name} một cách vui vẻ, rồi về khoang.`, 'Hay đấy, lát rủ nhau nhé! 👋', 1500, to)
+    await talk(from, `Bạn kết thúc câu chuyện phiếm với ${b.name} một cách vui vẻ, rồi về khoang.`, 'Hay đấy, lát rủ nhau nhé! 👋', 1500, to, 'smalltalk')
     settle(to)
     await goHome(from)
   })

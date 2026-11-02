@@ -15,6 +15,9 @@ export interface Line {
 /** Nói với một đồng đội (file riêng của cặp), cả team (team.md) hoặc sếp (Sep-<Role>.md) */
 export type Channel = Role | 'team' | 'boss'
 
+/** Loại việc của câu thoại; server chọn model theo agents/_models.md (tán gẫu → haiku...) */
+export type Kind = 'smalltalk' | 'work' | 'plan' | 'boss'
+
 /** Việc sếp giao: 'team' = việc chung, hoặc giao đích danh một agent */
 export interface Assignment {
   id: number
@@ -61,7 +64,7 @@ export function startAssignmentPolling(onAssignment: (a: Assignment) => void) {
  * Xin Claude (qua server gọi Claude CLI) một câu thoại cho `role` trong `situation`.
  * Trả về `fallback` khi AI tắt, server chưa chạy hoặc lỗi.
  */
-export async function aiLine(role: Role, situation: string, fallback: Line, channel?: Channel): Promise<Line> {
+export async function aiLine(role: Role, situation: string, fallback: Line, channel?: Channel, kind: Kind = 'work'): Promise<Line> {
   const { aiEnabled, setAi } = useStore.getState()
   if (!aiEnabled || Date.now() - lastFailure < RETRY_AFTER_MS) return fallback
 
@@ -69,7 +72,7 @@ export async function aiLine(role: Role, situation: string, fallback: Line, chan
     const res = await fetch('/api/speak', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role, situation, channel }),
+      body: JSON.stringify({ role, situation, channel, kind }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
