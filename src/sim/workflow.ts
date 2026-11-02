@@ -3,7 +3,7 @@ import {
   type DevRole, type Role,
 } from '../data/agents'
 import { useStore, type Area, type Stage } from '../store'
-import { motions, walkPath, walkTo } from './motion'
+import { fromAisle, motions, toAisle, walkPath, walkTo } from './motion'
 import { aiLine, markAssignmentDone, startAssignmentPolling, startEventPolling, startStatusSync, type Assignment, type Channel, type Kind } from './ai'
 
 // Agent chỉ làm việc khi sếp giao (qua office/inbox.md hoặc ô giao việc trên giao diện):
@@ -132,7 +132,7 @@ async function teamMeeting(taskId: number, request: string): Promise<{ title: st
       AGENTS.map(async (a, i) => {
         const [x, z] = spots[i]
         S().setAgent(a.id, { state: 'walk' })
-        await walkPath(a.id, [[a.seat[0], AISLE_Z], [laneX(x), AISLE_Z], [laneX(x), z], [x, z]], MEETING_CENTER)
+        await walkPath(a.id, [...toAisle(a.id), [laneX(x), AISLE_Z], [laneX(x), z], [x, z]], MEETING_CENTER)
         S().setAgent(a.id, { state: 'idle' })
       }),
     )
@@ -174,7 +174,7 @@ async function teamMeeting(taskId: number, request: string): Promise<{ title: st
         const [x, z] = spots[i]
         const [sx, sz] = a.seat
         S().setAgent(a.id, { state: 'walk' })
-        await walkPath(a.id, [[laneX(x), z], [laneX(x), AISLE_Z], [sx, AISLE_Z], [sx, sz]], [sx, DESK_Z])
+        await walkPath(a.id, [[laneX(x), z], [laneX(x), AISLE_Z], ...fromAisle(sx, sz)], [sx, DESK_Z])
         S().setAgent(a.id, { state: 'work' })
         settle(a.id)
       }),

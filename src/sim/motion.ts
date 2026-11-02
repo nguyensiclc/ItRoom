@@ -26,8 +26,23 @@ export function walkPath(id: Role, points: [number, number][], faceTo?: [number,
   })
 }
 
+// Ghế đặt ngay chỗ ngồi, lưng ghế quay ra lối đi: vào/ra chỗ ngồi thì đi dọc bên phải ghế rồi bước ngang,
+// không đi thẳng xuyên qua lưng ghế
+const SEAT_SIDE = 0.5
+const isSeat = (x: number, z: number) => AGENTS.some((a) => Math.abs(a.seat[0] - x) < 0.05 && Math.abs(a.seat[1] - z) < 0.05)
+
+/** Các điểm từ vị trí hiện tại của agent ra tới lối đi */
+export function toAisle(id: Role): [number, number][] {
+  const { x, z } = positions[id]
+  return isSeat(x, z) ? [[x + SEAT_SIDE, z], [x + SEAT_SIDE, AISLE_Z]] : [[x, AISLE_Z]]
+}
+
+/** Các điểm từ lối đi vào tới điểm [x, z] */
+export function fromAisle(x: number, z: number): [number, number][] {
+  return isSeat(x, z) ? [[x + SEAT_SIDE, AISLE_Z], [x + SEAT_SIDE, z], [x, z]] : [[x, AISLE_Z], [x, z]]
+}
+
 /** Đi ra lối đi, dọc lối đi tới cột đích, rồi vào điểm đích. */
 export function walkTo(id: Role, x: number, z: number, faceTo?: [number, number]): Promise<void> {
-  const from = positions[id]
-  return walkPath(id, [[from.x, AISLE_Z], [x, AISLE_Z], [x, z]], faceTo)
+  return walkPath(id, [...toAisle(id), ...fromAisle(x, z)], faceTo)
 }
