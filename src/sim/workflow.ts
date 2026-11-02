@@ -5,7 +5,7 @@ import {
 import { useStore, type Area, type Stage } from '../store'
 import { faceTo, fromAisle, motions, toAisle, walkPath, walkTo } from './motion'
 import {
-  aiLine, markAssignmentDone, realMode, realWork, startAssignmentPolling, startEventPolling, startProjectPolling, startStatusSync,
+  aiLine, markAssignmentDone, realMode, realWork, startAssignmentPolling, startEventPolling, startNamePolling, startProjectPolling, startStatusSync,
   type Assignment, type Channel, type Kind, type WorkRequest, type WorkResult,
 } from './ai'
 
@@ -18,6 +18,8 @@ const S = () => useStore.getState()
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms / S().speed))
 const chance = (p: number) => Math.random() < p
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)]
+/** Tên hiện tại của agent (đổi được ở trang cài đặt) */
+const nm = (r: Role) => agentById(r).name
 
 const DEV_FOCUS: Record<DevRole, string> = {
   BE: 'phần backend (API, database, xử lý nghiệp vụ)',
@@ -192,7 +194,7 @@ async function teamMeeting(taskId: number, request: string): Promise<{ title: st
     await speak('Tester', 'Nêu test case quan trọng nhất bạn sẽ chạy.', 'Mình sẽ chuẩn bị test case chính.')
     await speak(
       'PM',
-      `Chốt phân công: ${area === 'FULLSTACK' ? 'Minh làm API trước rồi bàn giao Khoa ghép giao diện' : area === 'BE' ? 'Minh làm' : 'Khoa làm'}, sau đó Hà review, Tú test. Giục mọi người về khoang.`,
+      `Chốt phân công: ${area === 'FULLSTACK' ? `${nm('BE')} làm API trước rồi bàn giao ${nm('FE')} ghép giao diện` : area === 'BE' ? `${nm('BE')} làm` : `${nm('FE')} làm`}, sau đó ${nm('QA')} review, ${nm('Tester')} test. Giục mọi người về khoang.`,
       'Chốt vậy nhé, về khoang làm thôi! 🚀',
     )
 
@@ -236,12 +238,12 @@ async function teamTaskFlow(taskId: number, request: string) {
   if (area === 'FULLSTACK') {
     await visit(
       'BE', 'FE',
-      { situation: `API cho task "${title}" đã xong. Báo FE để ghép giao diện, nhắc endpoint cụ thể.`, fallback: 'API xong rồi, Khoa ghép UI giúp nhé!' },
+      { situation: `API cho task "${title}" đã xong. Báo FE để ghép giao diện, nhắc endpoint cụ thể.`, fallback: `API xong rồi, ${nm('FE')} ghép UI giúp nhé!` },
       { situation: `BE bàn giao API cho task "${title}". Bạn nhận và hỏi/xác nhận một chi tiết về dữ liệu trả về.`, fallback: 'Ok, để mình ghép giao diện!' },
     )
     handOff(taskId, 'BE', 'FE', 'dev')
     void goHome('BE')
-    await code('FE', taskId, title, 'ghép API vào', 'Đang ghép giao diện... 🎨', 'code', `${DEV_FOCUS.FE}; ghép với API backend Minh vừa làm trên cùng branch (đọc code backend để biết endpoint)`)
+    await code('FE', taskId, title, 'ghép API vào', 'Đang ghép giao diện... 🎨', 'code', `${DEV_FOCUS.FE}; ghép với API backend ${nm('BE')} vừa làm trên cùng branch (đọc code backend để biết endpoint)`)
     owner = 'FE'
   }
   let merged = false
@@ -466,6 +468,7 @@ export function startWorkflow() {
   startEventPolling()
   startStatusSync()
   startProjectPolling()
+  startNamePolling()
   startAssignmentPolling(enqueue)
   startIdleLife()
   void workLoop()

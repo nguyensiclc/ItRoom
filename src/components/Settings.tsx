@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AGENTS, agentById, type Role } from '../data/agents'
 import { useStore } from '../store'
-import { fetchAgentSettings, saveAgentSettings, type AgentSettings } from '../sim/ai'
+import { applyNames, fetchAgentSettings, saveAgentSettings, type AgentSettings } from '../sim/ai'
 
 /** Các nhóm cài đặt; nhóm chưa làm hiện mờ để biết trước sẽ có gì */
 const SECTIONS = [
@@ -28,6 +28,7 @@ function AgentEditor({ saved, onSaved, onDirty }: { saved: AgentSettings; onSave
     setSaving(false)
     if (res.data) {
       onSaved(res.data)
+      applyNames({ [res.data.role]: res.data.name })
       setDraft(res.data)
       setStatus({ ok: true, text: 'Đã lưu. Agent dùng nội dung mới từ câu nói tiếp theo.' })
     } else setStatus({ ok: false, text: res.error ?? 'Lưu không được' })
@@ -45,7 +46,7 @@ function AgentEditor({ saved, onSaved, onDirty }: { saved: AgentSettings; onSave
         <span className="s-avatar" style={{ background: def.color }}>{def.name[0]}</span>
         <div>
           <strong>
-            {saved.name} <em style={{ color: def.color }}>@{saved.role}</em>
+            {draft.name || '…'} <em style={{ color: def.color }}>@{saved.role}</em>
           </strong>
           <small>agents/{saved.role}.md · agents/{saved.role}_skills.md</small>
         </div>
@@ -54,6 +55,10 @@ function AgentEditor({ saved, onSaved, onDirty }: { saved: AgentSettings; onSave
       <section>
         <h4>Thông tin</h4>
         <div className="s-grid">
+          <label>
+            Tên
+            <input value={draft.name} maxLength={20} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+          </label>
           <label>
             Chức danh
             <input value={draft.meta.chức_danh} maxLength={80} onChange={(e) => setMeta('chức_danh', e.target.value)} />
@@ -70,6 +75,11 @@ function AgentEditor({ saved, onSaved, onDirty }: { saved: AgentSettings; onSave
             </select>
           </label>
         </div>
+        {draft.name.trim() !== saved.name && (
+          <p className="s-warn">
+            Đổi tên: tên {saved.name} trong mọi file hồ sơ (kể cả hồ sơ đồng nghiệp) sẽ thay bằng {draft.name.trim() || '…'}, và cả team được báo trong kênh chung.
+          </p>
+        )}
         {draft.meta.cli !== saved.meta.cli && <p className="s-warn">Đổi CLI thì agent bắt đầu session trò chuyện mới, quên những gì đã nói trước đó.</p>}
       </section>
 
@@ -158,7 +168,11 @@ export function Settings() {
           <AgentEditor
             key={current.role}
             saved={current}
-            onSaved={(s) => setAgents((list) => list?.map((a) => (a.role === s.role ? s : a)) ?? null)}
+            onSaved={(s) => {
+              setAgents((list) => list?.map((a) => (a.role === s.role ? s : a)) ?? null)
+              // đổi tên thì hồ sơ đồng nghiệp cũng đổi: nạp lại để không ghi đè tên cũ khi lưu agent khác
+              void fetchAgentSettings().then(({ data }) => data && setAgents(data.agents))
+            }}
             onDirty={setDirty}
           />
         )}

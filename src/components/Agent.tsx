@@ -20,6 +20,7 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
   const runtime = useStore((s) => s.agents[def.id])
   const selected = useStore((s) => s.selected === def.id)
   const select = useStore((s) => s.select)
+  useStore((s) => s.namesVersion) // vẽ lại nhãn tên khi đổi tên ở trang cài đặt
   // Mount <Html> sau frame đầu: mount ngay thì root của nó có thể bị huỷ ở lần re-render đầu tiên (nhãn trống)
   const [labelReady, setLabelReady] = useState(false)
   useEffect(() => {

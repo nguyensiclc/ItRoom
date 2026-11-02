@@ -315,3 +315,28 @@ export interface AgentSettings {
 
 export const fetchAgentSettings = () => api<{ agents: AgentSettings[] }>('/api/settings/agents')
 export const saveAgentSettings = (s: AgentSettings) => api<AgentSettings>('/api/settings/agent', s)
+
+// ---------- tên agent (dòng `tên:` trong agents/<Role>.md, đổi được ở trang cài đặt) ----------
+
+/** Gán tên mới vào danh sách AGENTS dùng chung; báo store để nhãn 3D, chat... vẽ lại */
+export function applyNames(names: Partial<Record<Role, string>>) {
+  let changed = false
+  for (const a of AGENTS) {
+    const n = names[a.id]
+    if (n && n !== a.name) {
+      a.name = n
+      changed = true
+    }
+  }
+  if (changed) useStore.getState().bumpNames()
+}
+
+/** Lấy tên từ server lúc mở trang và định kỳ (phòng khi sửa tay file .md) */
+export function startNamePolling() {
+  const poll = async () => {
+    const { data } = await api<Record<Role, string>>('/api/names')
+    if (data) applyNames(data)
+    setTimeout(poll, 15_000)
+  }
+  void poll()
+}

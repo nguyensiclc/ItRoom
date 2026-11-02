@@ -40,7 +40,8 @@ if (process.env.USE_API_KEY !== '1') {
 
 const ROLES = ['PM', 'BE', 'FE', 'QA', 'Tester'] as const
 type Role = (typeof ROLES)[number]
-const NAMES: Record<Role, string> = { PM: 'Lan', BE: 'Minh', FE: 'Khoa', QA: 'Hà', Tester: 'Tú' }
+/** Tên mặc định khi file tính cách chưa có dòng `tên:` */
+const DEFAULT_NAMES: Record<Role, string> = { PM: 'Lan', BE: 'Minh', FE: 'Khoa', QA: 'Hà', Tester: 'Tú' }
 
 const OUTPUT_SCHEMA = JSON.stringify({
   type: 'object',
@@ -120,7 +121,10 @@ function ensureChatFile() {
   }
 }
 
-const who = (role: Role) => `${role} (${NAMES[role]})`
+/** Tên agent đọc từ `tên:` trong agents/<Role>.md (đổi được ở trang cài đặt) */
+const nameOf = (role: Role) => frontmatter(path.join(AGENTS_DIR, `${role}.md`), 'tên') ?? DEFAULT_NAMES[role]
+const names = () => Object.fromEntries(ROLES.map((r) => [r, nameOf(r)])) as Record<Role, string>
+const who = (role: Role) => `${role} (${nameOf(role)})`
 const mdLine = (speaker: string, text: string) => `- ${now()} **${speaker}:** ${text.replace(/\s+/g, ' ')}\n`
 
 function appendLog(speaker: string, text: string) {
@@ -268,7 +272,7 @@ function unread(role: Role, s: AgentSession, file: string, cap: number) {
   const from = s.seen[key] ?? 0 // kênh tạo ra sau khi session bắt đầu: đọc từ đầu
   const text = all
     .slice(from)
-    .filter((l) => !l.includes(`**${who(role)}:**`))
+    .filter((l) => !l.includes(`**${role} (`)) // theo mã vai trò, để vẫn nhận ra câu cũ của mình sau khi đổi tên
     .slice(-cap)
     .join('\n')
   // chỉ đánh dấu đã đọc sau khi agent trả lời thành công
@@ -943,7 +947,7 @@ function chatList() {
   return [
     item('team', 'team', 'Cả team', [...ROLES]),
     ...groups.map((g) => item(`group:${g.id}`, 'group', g.name, g.members)),
-    ...ROLES.map((r) => item(`dm:${r}`, 'dm', NAMES[r], [r])),
+    ...ROLES.map((r) => item(`dm:${r}`, 'dm', nameOf(r), [r])),
   ]
 }
 
@@ -957,7 +961,7 @@ function inChat(chat: string, fn: () => Promise<void>) {
 /** Ai trong nhóm được sếp gọi tên (@FE, @Khoa...); không gọi ai thì cả nhóm trả lời */
 function mentioned(text: string, members: Role[]) {
   const tags = [...text.matchAll(/@([\p{L}\w]+)/gu)].map((m) => m[1].toLowerCase())
-  return members.filter((r) => tags.includes(r.toLowerCase()) || tags.includes(NAMES[r].toLowerCase()))
+  return members.filter((r) => tags.includes(r.toLowerCase()) || tags.includes(nameOf(r).toLowerCase()))
 }
 
 function sendChat(chat: string, text: string, task = false): string | null {
@@ -1165,7 +1169,7 @@ function readJson(req: http.IncomingMessage, limit = 10_000): Promise<Record<str
 
 // ---------- trang cài đặt: sửa tính cách (agents/<Role>.md) và chuyên môn (agents/<Role>_skills.md) ----------
 
-/** Các khoá phần đầu file tính cách được sửa trên trang cài đặt (id và tên giữ nguyên vì giao diện 3D dùng cố định) */
+/** Các khoá phần đầu file tính cách sửa trực tiếp trên trang cài đặt (tên đổi riêng vì phải thay cả trong hồ sơ đồng nghiệp; id cố định) */
 const EDITABLE_META = ['chức_danh', 'sở_thích', 'cli'] as const
 
 /** Tách file .md thành phần đầu (giữ nguyên thứ tự khoá) và phần thân */
@@ -1186,7 +1190,7 @@ function agentSettings(role: Role) {
   const file = skillsFile(role)
   return {
     role,
-    name: meta['tên'] ?? NAMES[role],
+    name: nameOf(role),
     meta: Object.fromEntries(EDITABLE_META.map((k) => [k, meta[k] ?? ''])),
     persona: persona.body,
     /** Nguyên văn agents/<Role>_skills.md, sửa tự do */
@@ -1194,10 +1198,37 @@ function agentSettings(role: Role) {
   }
 }
 
+/** Tên hợp lệ: 1-20 ký tự, không trùng agent khác; trả về lỗi hoặc null */
+function checkName(role: Role, name: string) {
+  if (!name) return 'Tên không được để trống'
+  if (name.length > 20) return 'Tên tối đa 20 ký tự'
+  if (/[|*:\r\n()@]/.test(name)) return 'Tên không được chứa | * : ( ) @'
+  const taken = ROLES.find((r) => r !== role && nameOf(r).toLowerCase() === name.toLowerCase())
+  return taken ? `${name} đã là tên của ${taken}` : null
+}
+
+/** Thay tên cũ bằng tên mới (đúng nguyên từ, phân biệt hoa thường) trong mọi file hồ sơ agents/*.md */
+function renameInProfiles(oldName: string, newName: string) {
+  const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`(?<![\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'gu')
+  for (const f of fs.readdirSync(AGENTS_DIR).filter((n) => n.endsWith('.md'))) {
+    const file = path.join(AGENTS_DIR, f)
+    const text = fs.readFileSync(file, 'utf8')
+    const next = text.replace(re, newName)
+    if (next !== text) fs.writeFileSync(file, next)
+  }
+}
+
 /** Ghi lại 2 file của agent từ dữ liệu trang cài đặt; lượt nói tiếp theo dùng ngay nội dung mới */
 function saveAgentSettings(role: Role, body: Record<string, unknown>) {
   const file = path.join(AGENTS_DIR, `${role}.md`)
   const current = splitMd(file)
+  const oldName = nameOf(role)
+  const newName = typeof body.name === 'string' ? body.name.replace(/\s+/g, ' ').trim() : oldName
+  if (newName !== oldName) {
+    const err = checkName(role, newName)
+    if (err) return { error: err }
+  }
   const incoming = typeof body.meta === 'object' && body.meta ? (body.meta as Record<string, unknown>) : {}
   const meta = new Map(current.meta)
   for (const k of EDITABLE_META) {
@@ -1211,6 +1242,17 @@ function saveAgentSettings(role: Role, body: Record<string, unknown>) {
   fs.writeFileSync(file, `---\n${[...meta].map(([k, v]) => `${k}: ${v}`).join('\n')}\n---\n\n${persona}\n`)
 
   if (typeof body.skills === 'string') fs.writeFileSync(skillsFile(role), `${body.skills.trim().slice(0, 20_000)}\n`)
+
+  if (newName !== oldName) {
+    // đổi tên ở dòng `tên:` và trong mọi hồ sơ (persona hay nhắc tên đồng nghiệp), rồi báo cả team
+    renameInProfiles(oldName, newName)
+    const fixed = splitMd(file)
+    const m = new Map(fixed.meta)
+    m.set('tên', newName)
+    fs.writeFileSync(file, `---\n${[...m].map(([k, v]) => `${k}: ${v}`).join('\n')}\n---\n\n${fixed.body}\n`)
+    appendChannel(role, 'team', 'Sếp', `(thông báo) Từ giờ ${oldName} (${role}) đổi tên thành ${newName}, mọi người gọi là ${newName} nhé.`)
+    appendLog('Sếp', `đổi tên ${role}: ${oldName} → ${newName}`)
+  }
   appendLog('Sếp', `sửa cài đặt tính cách / chuyên môn của ${who(role)}`)
   return agentSettings(role)
 }
@@ -1223,7 +1265,7 @@ function agentDetail(role: Role) {
   const w = workers.get(role)
   return {
     role,
-    name: NAMES[role],
+    name: nameOf(role),
     title: frontmatter(file, 'chức_danh'),
     hobby: frontmatter(file, 'sở_thích'),
     persona: readMd(file),
@@ -1250,12 +1292,14 @@ const server = http.createServer(async (req, res) => {
 
   // ---- trang cài đặt ----
   if (req.method === 'GET' && url.pathname === '/api/settings/agents') return send(res, 200, { agents: ROLES.map(agentSettings) })
+  if (req.method === 'GET' && url.pathname === '/api/names') return send(res, 200, names())
 
   if (req.method === 'POST' && url.pathname === '/api/settings/agent') {
     const body = await readJson(req, 100_000) // tính cách dài tới 20 nghìn ký tự
     const role = typeof body?.role === 'string' ? toRole(body.role) : undefined
     if (!body || !role) return send(res, 400, { error: 'invalid_request' })
-    return send(res, 200, saveAgentSettings(role, body))
+    const saved = saveAgentSettings(role, body)
+    return send(res, 'error' in saved ? 400 : 200, saved)
   }
 
   // ---- dự án thật ----

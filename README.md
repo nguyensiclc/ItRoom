@@ -100,7 +100,8 @@ Nút **⚙️ Cài đặt** trên thanh trên cùng mở trang cài đặt. Hi�
 
 - Chọn agent ở hàng trên, sửa **Thông tin** (chức danh, sở thích, CLI trò chuyện), **Tính cách** (phần thân của `agents/<Role>.md`), **Chuyên môn** (một ô soạn tự do, chính là toàn bộ file `agents/<Role>_skills.md`).
 - Bấm **Lưu** là ghi thẳng vào 2 file đó; agent dùng nội dung mới từ câu nói tiếp theo. Áp dụng cho mọi agent và mọi lượt gọi CLI (trò chuyện lẫn làm việc thật): session đã có từ trước thì server gửi bản hồ sơ mới kèm tin nhắn kế tiếp, vì Claude CLI giữ system prompt của lượt đầu khi nối tiếp session, còn agy không có system prompt. Đổi agent hoặc đóng trang khi chưa lưu thì được hỏi lại.
-- Tên và mã agent chưa sửa được ở đây vì giao diện 3D dùng cố định. Đổi CLI thì agent bắt đầu session trò chuyện mới.
+- **Đổi tên** (1-20 ký tự, không trùng người khác): server thay tên cũ bằng tên mới trong mọi file hồ sơ `agents/*.md` (đúng nguyên từ, nên "Hà" không đụng tới "Hài", "Hàn"), ghi thông báo vào kênh team để cả team biết, và giao diện (nhãn 3D, chat, bảng chi tiết) hiện tên mới ngay. Mã vai trò (PM, BE...) giữ cố định.
+- Đổi CLI thì agent bắt đầu session trò chuyện mới.
 - Vẫn sửa tay 2 file được như trước; trang cài đặt đọc lại mỗi lần mở.
 
 ## Xem chi tiết agent

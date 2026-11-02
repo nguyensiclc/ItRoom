@@ -48,6 +48,9 @@ interface Store {
   /** Cửa sổ chat kiểu Teams: undefined = đóng, null = mở chưa chọn cuộc chat, hoặc id (`dm:BE`, `group:<id>`) */
   chat: string | null | undefined
   openChat: (id: string | null | undefined) => void
+  /** Tăng mỗi khi tên agent đổi (tên nằm trong AGENTS dùng chung), để nhãn và danh sách vẽ lại */
+  namesVersion: number
+  bumpNames: () => void
   /** Trang cài đặt đang mở */
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
@@ -77,6 +80,8 @@ export const useStore = create<Store>((set) => ({
   selected: null,
   chat: undefined,
   openChat: (chat) => set({ chat }),
+  namesVersion: 0,
+  bumpNames: () => set((s) => ({ namesVersion: s.namesVersion + 1 })),
   settingsOpen: false,
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   speed: 1,
