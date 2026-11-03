@@ -1,11 +1,12 @@
+import { startRosterPolling } from './roster'
 import {
-  AGENTS, agentById, AISLE_Z, DESK_Z, HOBBIES, MEETING_CENTER, MEETING_LANE_OFFSET, meetingSpot,
+  AGENTS, agentById, AISLE_Z, DESK_Z, HOBBIES, MEDIA_FUNCS, MEETING_CENTER, MEETING_LANE_OFFSET, meetingSpot,
   type DevRole, type Role,
 } from '../data/agents'
 import { useStore, type Area, type Stage } from '../store'
 import { faceTo, fromAisle, motions, toAisle, walkPath, walkTo } from './motion'
 import {
-  aiLine, currentProject, initProjectApi, markAssignmentDone, realMode, realWork, startAssignmentPolling, startEventPolling, startNamePolling, startProjectPolling, startStatusSync,
+  aiLine, currentProject, initProjectApi, markAssignmentDone, realMode, realWork, startAssignmentPolling, startEventPolling, startProjectPolling, startStatusSync,
   type Assignment, type Channel, type Kind, type WorkRequest, type WorkResult,
 } from './ai'
 
@@ -123,6 +124,12 @@ const WORK_BUBBLE: Record<WorkRequest['step'], string> = {
   review: '🔍 Đang review diff...',
   test: '🧪 Đang chạy test...',
   personal: '⌨️ Đang làm việc...',
+  script: '📝 Đang viết kịch bản...',
+  design: '🎨 Đang thiết kế ảnh...',
+  audio: '🎙 Đang thu âm, làm nhạc...',
+  edit: '🎞 Đang dựng video...',
+  mreview: '👀 Đang duyệt sản phẩm...',
+  mfix: '🔧 Đang sửa theo góp ý...',
 }
 
 /** Một bước việc thật khi đang ở chế độ dự án thật; null khi mô phỏng hoặc lỗi (bước đó quay về mô phỏng) */
@@ -276,7 +283,7 @@ async function teamTaskFlow(taskId: number, request: string) {
     if (rv) await say('QA', `${rv.verdict === 'fail' ? '📝' : '👍'} ${rv.summary}`, 2500)
     else await talk('QA', `Bạn đang review code ${AREA_LABEL[owner]} của task "${title}". Lẩm bẩm một nhận xét khi đọc code.`, 'Đang review code...', 2500)
     if (rv ? rv.verdict === 'fail' : chance(0.25)) {
-      if (rv?.area && area === 'FULLSTACK') owner = rv.area
+      if ((rv?.area === 'BE' || rv?.area === 'FE') && area === 'FULLSTACK') owner = rv.area
       await visit(
         'QA', owner,
         {
@@ -306,7 +313,7 @@ async function teamTaskFlow(taskId: number, request: string) {
     if (ts) await say('Tester', `${ts.verdict === 'fail' ? '🐞' : '✅'} ${ts.summary}`, 2500)
     else await talk('Tester', `Bạn đang chạy test case cho task "${title}".`, 'Đang chạy test case...', 2500)
     if (ts ? ts.verdict === 'fail' : chance(0.35)) {
-      const bugOwner: DevRole = ts?.area || (area === 'FULLSTACK' ? pick<DevRole>(['BE', 'FE']) : owner)
+      const bugOwner: DevRole = ts?.area === 'BE' || ts?.area === 'FE' ? ts.area : area === 'FULLSTACK' ? pick<DevRole>(['BE', 'FE']) : owner
       const task = S().tasks.find((t) => t.id === taskId)!
       S().updateTask(taskId, { bugs: task.bugs + 1 })
       await visit(
@@ -350,7 +357,138 @@ async function teamTaskFlow(taskId: number, request: string) {
 
 // ---------- việc riêng: chỉ người được giao làm, xong báo cáo sếp ----------
 
+// ---------- phòng media: trưởng nhóm nhận việc, chia cho thiết kế / âm thanh / dựng video, rồi duyệt ----------
+
+/** Người phụ trách từng khâu trong phòng media (thiếu người thì trưởng nhóm tự làm khâu đó) */
+function mediaCrew(lead: Role) {
+  const first = (f: string) => AGENTS.find((a) => a.func === f)?.id ?? lead
+  return { design: first('Design'), audio: first('Audio'), video: first('Video') }
+}
+
+const MEDIA_PART = { design: 'phần hình ảnh (thiết kế từng cảnh)', audio: 'phần âm thanh (lời thoại, nhạc nền)', video: 'phần dựng video' } as const
+
+async function runMediaTask(taskId: number, lead: Role, request: string) {
+  const crew = mediaCrew(lead)
+  const team = [...new Set([lead, crew.design, crew.audio, crew.video])]
+  await withAgents(team, async () => {
+    S().setAgent(lead, { taskId })
+    S().updateTask(taskId, { stage: 'dev' })
+    settle(lead)
+    S().setAgent(lead, { bubble: '💭 ...' })
+    const ack = await aiLine(
+      lead,
+      `Sếp giao cho phòng media (bạn là trưởng nhóm): "${request}". Đặt tên ngắn (tối đa 6 từ) cho việc này vào "title", ` +
+        `và trả lời sếp là bạn nhận việc: bạn viết kịch bản rồi chia cho ${nm(crew.design)} (thiết kế), ${nm(crew.audio)} (âm thanh), ${nm(crew.video)} (dựng video).`,
+      { title: '', text: 'Dạ em nhận việc ạ, em lên kịch bản rồi chia việc cho cả nhóm ngay! 🎬' },
+      'boss', 'boss',
+    )
+    if (ack.title) S().updateTask(taskId, { title: ack.title })
+    const title = ack.title || request
+    await say(lead, ack.text)
+    if (!currentProject() && S().aiEnabled) {
+      try {
+        await initProjectApi(title, request)
+      } catch (err) {
+        console.warn('Tự khởi tạo dự án lỗi:', err)
+      }
+    }
+    if (!realMode()) {
+      // chế độ mô phỏng: chỉ diễn cảnh chia việc
+      for (const [part, who] of Object.entries(crew) as [keyof typeof MEDIA_PART, Role][]) {
+        if (who === lead) continue
+        await visit(lead, who, { situation: `Giao ${MEDIA_PART[part]} của việc "${title}".`, fallback: `${nm(who)} làm ${MEDIA_PART[part]} giúp chị nhé!` }, { situation: 'Nhận việc.', fallback: 'Dạ ok ạ! 👍' })
+        await goHome(lead)
+      }
+      await wait(3000)
+      await talk(lead, `Phòng media vừa làm xong việc sếp giao: "${request}". Báo cáo ngắn gọn cho sếp.`, 'Dạ sếp, phòng media làm xong rồi ạ ✅', undefined, 'boss', 'boss')
+      S().updateTask(taskId, { stage: 'done' })
+      S().setAgent(lead, { taskId: null })
+      settle(lead)
+      return
+    }
+
+    // 1) kịch bản
+    const script = await work(lead, taskId, 'script')
+    if (script) await say(lead, script.summary)
+    const notes: Record<string, string> = {}
+    // 2) thiết kế, 3) âm thanh: trưởng nhóm sang tận bàn giao việc rồi người đó làm
+    for (const part of ['design', 'audio'] as const) {
+      const who = crew[part]
+      if (who !== lead) {
+        await visit(
+          lead, who,
+          { situation: `Bạn giao ${MEDIA_PART[part]} của việc "${title}" theo kịch bản vừa viết (kich-ban.md). Nói ngắn yêu cầu chính.`, fallback: `${nm(who)} ơi, làm ${MEDIA_PART[part]} theo kịch bản giúp chị nhé!` },
+          { situation: `Bạn nhận ${MEDIA_PART[part]}. Đáp ngắn.`, fallback: 'Dạ em làm ngay ạ! 👍' },
+        )
+        void goHome(lead)
+      }
+      S().setAgent(who, { taskId })
+      settle(who)
+      const r = await work(who, taskId, part)
+      if (r) {
+        notes[part] = `${r.summary} ${r.details}`.slice(0, 1500)
+        await say(who, r.summary)
+      }
+      if (who !== lead) {
+        S().setAgent(who, { taskId: null })
+        settle(who)
+      }
+    }
+    // 4) dựng video
+    const editor = crew.video
+    const editNotes = `Thiết kế: ${notes.design ?? '(xem thư mục images)'}\nÂm thanh: ${notes.audio ?? '(xem thư mục audio)'}`
+    if (editor !== lead) {
+      await visit(
+        lead, editor,
+        { situation: `Ảnh và audio của việc "${title}" đã xong. Nhờ dựng video. Nói ngắn.`, fallback: `${nm(editor)} ơi, ảnh và tiếng xong rồi, dựng video giúp chị nhé! 🎞` },
+        { situation: 'Nhận dựng video. Đáp ngắn.', fallback: 'Dạ em dựng liền ạ!' },
+      )
+      void goHome(lead)
+    }
+    S().setAgent(editor, { taskId })
+    settle(editor)
+    const ed = await work(editor, taskId, 'edit', editNotes)
+    if (ed) await say(editor, ed.summary)
+    if (editor !== lead) {
+      S().setAgent(editor, { taskId: null })
+      settle(editor)
+    }
+    // 5) trưởng nhóm duyệt; chưa đạt thì người phụ trách sửa (và dựng lại), tối đa 2 vòng
+    await arrived(lead)
+    S().updateTask(taskId, { stage: 'review' })
+    let review: WorkResult | null = null
+    for (let round = 0; round < 2; round++) {
+      review = await work(lead, taskId, 'mreview', '', true)
+      if (!review || review.verdict !== 'fail') break
+      await say(lead, review.summary)
+      const part = review.area === 'design' || review.area === 'audio' || review.area === 'video' ? review.area : 'video'
+      const fixer = crew[part]
+      S().setAgent(fixer, { taskId })
+      settle(fixer)
+      await work(fixer, taskId, 'mfix', review.details.slice(0, 3000))
+      if (part !== 'video') await work(editor, taskId, 'mfix', `Ảnh / audio vừa được sửa (${part}): dựng lại video với file mới.\n${review.details.slice(0, 1500)}`)
+      if (fixer !== lead) {
+        S().setAgent(fixer, { taskId: null })
+        settle(fixer)
+      }
+    }
+    if (review) {
+      await talk(
+        lead,
+        `Phòng media vừa ${review.verdict === 'fail' ? 'làm nhưng CHƯA đạt' : 'làm xong'} việc sếp giao: "${request}". Kết quả duyệt: ${review.summary} ` +
+          `Chi tiết: ${review.details.slice(0, 600)}${review.merged ? ' Đã merge vào nhánh chính, sếp xem ở nút 🎬 Media.' : ''} Báo cáo ngắn gọn cho sếp, nhắc công từng bạn.`,
+        review.summary, undefined, 'boss', 'boss',
+      )
+    }
+    S().updateTask(taskId, { stage: 'done' })
+    for (const id of team) S().setAgent(id, { taskId: null })
+    team.forEach(settle)
+  })
+}
+
 async function runPersonalTask(taskId: number, who: Role, request: string) {
+  // việc giao cho trưởng nhóm media mà phòng có thêm người: chạy dây chuyền cả nhóm
+  if (agentById(who).func === 'Media' && AGENTS.some((a) => a.id !== who && MEDIA_FUNCS.includes(a.func))) return runMediaTask(taskId, who, request)
   await withAgents([who], async () => {
     // Đang ngồi ở khoang (hoặc đang đi về): nhận việc tại chỗ
     S().setAgent(who, { taskId })
@@ -491,7 +629,7 @@ export function startWorkflow() {
   startEventPolling()
   startStatusSync()
   startProjectPolling()
-  startNamePolling()
+  startRosterPolling()
   startAssignmentPolling(enqueue)
   startIdleLife()
   void workLoop()

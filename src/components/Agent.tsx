@@ -1,11 +1,29 @@
-import { useEffect, useRef, useState } from 'react'
+import { Component, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { MathUtils, type Group } from 'three'
-import { HOBBIES, type AgentDef } from '../data/agents'
+import { HOBBIES, floorAt, type AgentDef } from '../data/agents'
 import { useStore } from '../store'
 import { facing, motions, positions, yaws } from '../sim/motion'
 import { StickFigure } from './StickFigure'
+import { RealFigure } from './RealFigure'
+
+/** Dùng mô hình người 3D có khung xương cho mọi agent; false = quay về người que */
+export const REAL_FIGURES = true
+
+/** Không tải được mô hình 3D thì quay về người que, không làm hỏng cả cảnh */
+class FigureBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+  componentDidCatch(e: unknown) {
+    console.warn('Không tải được mô hình 3D, dùng người que:', e)
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children
+  }
+}
 
 const WALK_SPEED = 1.6 // m/s
 
@@ -28,8 +46,18 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
     return () => cancelAnimationFrame(raf)
   }, [])
 
+  // chỉ dựng hình người ở tầng đang xem; tầng kia vẫn tính đường đi (để đi lên/xuống tầng đúng chỗ) nhưng không vẽ
+  const floor = useStore((s) => s.floor)
+  const [here, setHere] = useState(() => floorAt(positions[def.id].x) === floor)
+  const hereRef = useRef(here)
+
   useFrame((_, dt) => {
     const pos = positions[def.id]
+    const nowHere = floorAt(pos.x) === useStore.getState().floor
+    if (nowHere !== hereRef.current) {
+      hereRef.current = nowHere
+      setHere(nowHere)
+    }
     const m = motions[def.id]
     if (m) {
       const target = m.path[0]
@@ -62,6 +90,8 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
     yaws[def.id] = g.rotation.y
   })
 
+  if (!here) return <group ref={root} visible={false} />
+
   return (
     <group
       ref={root}
@@ -73,14 +103,21 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
       onPointerOver={() => (document.body.style.cursor = 'pointer')}
       onPointerOut={() => (document.body.style.cursor = 'auto')}
     >
-      <StickFigure
-        role={def.id}
-        color={def.color}
-        hobby={def.hobby}
-        state={runtime.state}
-        mood={!runtime.bubble ? 'quiet' : runtime.bubble.startsWith('💭') ? 'think' : 'speak'}
-        phase={index * 1.37}
-      />
+      {(() => {
+        const mood = !runtime.bubble ? 'quiet' : runtime.bubble.startsWith('💭') ? 'think' : 'speak'
+        const stick = (
+          <StickFigure role={def.id} look={def.func} color={def.color} hobby={def.hobby} state={runtime.state} mood={mood} phase={index * 1.37} />
+        )
+        if (!REAL_FIGURES) return stick
+        // đang tải mô hình thì tạm hiện người que
+        return (
+          <FigureBoundary fallback={stick}>
+            <Suspense fallback={stick}>
+              <RealFigure role={def.id} body={def.body ?? 'nam'} color={def.color} hobby={def.hobby} state={runtime.state} mood={mood} phase={index * 1.37} />
+            </Suspense>
+          </FigureBoundary>
+        )
+      })()}
 
       {/* vùng click rộng hơn nét người que */}
       <mesh position={[0, 0.9, 0]} visible={false}>

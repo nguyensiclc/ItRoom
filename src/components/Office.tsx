@@ -2,7 +2,7 @@ import { useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { RoundedBox } from '@react-three/drei'
 import { CanvasTexture, MathUtils, RepeatWrapping, SRGBColorSpace, type Group, type Mesh, type MeshStandardMaterial } from 'three'
-import { AGENTS, CUBICLE_FRONT_Z, CUBICLE_WIDTH, DESK_Z, MEETING_CENTER, SEAT_Z, type AgentDef } from '../data/agents'
+import { AGENTS, CUBICLE_FRONT_Z, CUBICLE_WIDTH, DESK_Z, MEDIA_ROOM, MEETING_CENTER, SEAT_Z, inMediaRoom, mediaDeskWidth, FLOORS, type AgentDef, type Floor } from '../data/agents'
 import { useStore } from '../store'
 import { positions, yaws } from '../sim/motion'
 import { mouseOffset, usingMouse } from './StickFigure'
@@ -117,6 +117,78 @@ function codeTexture(accent: string) {
   return tex
 }
 
+const mediaTextures = new Map<string, CanvasTexture>()
+
+/** Màn hình phòng media: màn chính là phần mềm dựng phim (khung xem + timeline nhiều track), màn phụ là sóng âm / chỉnh ảnh */
+function mediaTexture(owner: AgentDef, side: boolean) {
+  const key = `${owner.id}:${side}`
+  let tex = mediaTextures.get(key)
+  if (tex) return tex
+  const c = document.createElement('canvas')
+  c.width = 256
+  c.height = 144
+  const g = c.getContext('2d')!
+  const rand = rng(owner.id.length * 71 + (side ? 5 : 1))
+  g.fillStyle = '#111318'
+  g.fillRect(0, 0, 256, 144)
+  if (!side) {
+    // khung xem trước: bầu trời hoàng hôn + núi
+    const sky = g.createLinearGradient(0, 8, 0, 70)
+    sky.addColorStop(0, '#f472b6')
+    sky.addColorStop(1, '#fbbf24')
+    g.fillStyle = sky
+    g.fillRect(70, 8, 116, 64)
+    g.fillStyle = '#1e1b4b'
+    g.beginPath()
+    g.moveTo(70, 72)
+    g.lineTo(110, 40)
+    g.lineTo(135, 58)
+    g.lineTo(160, 34)
+    g.lineTo(186, 72)
+    g.fill()
+    // timeline: track video, track audio có sóng âm, đầu đọc đỏ
+    const tracks = [owner.color, '#38bdf8', '#a78bfa', '#4ade80']
+    tracks.forEach((col, i) => {
+      const y = 82 + i * 14
+      let x = 6
+      while (x < 250) {
+        const w = 18 + rand() * 50
+        g.fillStyle = col
+        g.globalAlpha = 0.85
+        g.fillRect(x, y, Math.min(w, 250 - x), 10)
+        if (i >= 2) {
+          g.fillStyle = '#0f172a'
+          for (let k = x + 2; k < x + w - 2 && k < 248; k += 3) g.fillRect(k, y + 5 - (rand() * 4), 1, rand() * 8)
+        }
+        x += w + 3
+      }
+    })
+    g.globalAlpha = 1
+    g.fillStyle = '#ef4444'
+    g.fillRect(120, 78, 2, 62)
+  } else {
+    // màn phụ: sóng âm lớn + thanh mức âm lượng
+    g.strokeStyle = owner.color
+    g.lineWidth = 1
+    g.beginPath()
+    for (let x = 0; x < 256; x++) {
+      const a = (Math.sin(x * 0.11) * 0.5 + Math.sin(x * 0.037) * 0.5) * (0.4 + rand() * 0.6) * 34
+      g.moveTo(x, 50 - a)
+      g.lineTo(x, 50 + a)
+    }
+    g.stroke()
+    for (let i = 0; i < 24; i++) {
+      const h = 10 + rand() * 40
+      g.fillStyle = h > 40 ? '#ef4444' : h > 28 ? '#facc15' : '#22c55e'
+      g.fillRect(8 + i * 10, 138 - h, 7, h)
+    }
+  }
+  tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  mediaTextures.set(key, tex)
+  return tex
+}
+
 const sideTextures = new Map<string, CanvasTexture>()
 
 /** Màn hình phụ: BE xem log terminal, người khác xem bản chạy thử của web app */
@@ -128,7 +200,7 @@ function sideTexture(owner: AgentDef) {
   c.height = 144
   const g = c.getContext('2d')!
   const rand = rng(owner.id.length * 131 + owner.color.charCodeAt(3) * 17)
-  if (owner.id === 'BE') {
+  if (owner.func === 'BE') {
     g.fillStyle = '#05080f'
     g.fillRect(0, 0, 256, 144)
     for (let y = 8; y < 140; y += 8) {
@@ -223,7 +295,7 @@ function Screen({ owner, position, side = false }: { owner: AgentDef; position: 
   const movie = useRef<MeshStandardMaterial>(null)
   const lock = useRef<Mesh>(null)
   const watching = useStore((s) => !side && owner.hobby === 'movie' && s.agents[owner.id].state === 'hobby')
-  const tex = useMemo(() => (side ? sideTexture(owner) : codeTexture(owner.color)), [owner, side])
+  const tex = useMemo(() => (inMediaRoom(owner) ? mediaTexture(owner, side) : side ? sideTexture(owner) : codeTexture(owner.color)), [owner, side])
   const lockTex = useMemo(() => lockTexture(owner), [owner])
   useFrame(({ clock }) => {
     if (lock.current) lock.current.visible = awayFromSeat(owner)
@@ -757,13 +829,16 @@ function AirConditioner({ position }: { position: V3 }) {
 }
 
 function Cubicles() {
+  useStore((s) => s.namesVersion) // có người vào / ra thì xếp lại khoang
   const depth = CUBICLE_FRONT_Z - PANEL_BACK_Z
   const midZ = (CUBICLE_FRONT_Z + PANEL_BACK_Z) / 2
-  const xs = AGENTS.map((a) => a.seat[0])
+  const row = AGENTS.filter((a) => !inMediaRoom(a))
+  if (!row.length) return null
+  const xs = row.map((a) => a.seat[0])
   const walls = [...xs.map((x) => x - CUBICLE_WIDTH / 2), xs[xs.length - 1] + CUBICLE_WIDTH / 2]
   return (
     <group>
-      {AGENTS.map((a) => (
+      {row.map((a) => (
         <group key={a.id}>
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[a.seat[0], 0.004, midZ + 0.1]} receiveShadow>
             <planeGeometry args={[CUBICLE_WIDTH - 0.3, depth - 0.3]} />
@@ -792,7 +867,273 @@ function Cubicles() {
   )
 }
 
+// ---------- phòng media: thu âm, chụp ảnh, dựng video ----------
+
+const ACOUSTIC = '#334155'
+
+/** Micro thu âm trên tay đỡ, có lưới chắn hơi */
+function StudioMic({ position }: { position: V3 }) {
+  return (
+    <group position={position}>
+      <Cyl args={[0.025, 0.03, 0.04]} position={[0, 0.02, 0]} color="#1f2937" metalness={0.6} />
+      <Cyl args={[0.008, 0.008, 0.36]} position={[0, 0.2, 0]} color="#475569" metalness={0.7} />
+      <Cyl args={[0.008, 0.008, 0.3]} position={[0, 0.38, 0.13]} rotation={[Math.PI / 2.6, 0, 0]} color="#475569" metalness={0.7} />
+      <group position={[0, 0.43, 0.27]}>
+        <Cyl args={[0.028, 0.028, 0.11]} position={[0, -0.03, 0]} color="#0f172a" metalness={0.5} roughness={0.3} />
+        <mesh position={[0, -0.03, 0.08]}>
+          <torusGeometry args={[0.055, 0.005, 6, 20]} />
+          <meshStandardMaterial color="#111827" />
+        </mesh>
+        <mesh position={[0, -0.03, 0.08]}>
+          <circleGeometry args={[0.055, 20]} />
+          <meshStandardMaterial color="#111827" transparent opacity={0.45} side={2} />
+        </mesh>
+      </group>
+    </group>
+  )
+}
+
+/** Loa kiểm âm đặt bàn */
+function Speaker({ position, rotation }: { position: V3; rotation?: V3 }) {
+  return (
+    <group position={position} rotation={rotation}>
+      <Soft args={[0.13, 0.2, 0.15]} position={[0, 0.1, 0]} color="#18181b" radius={0.01} />
+      <Cyl args={[0.042, 0.042, 0.01]} position={[0, 0.075, 0.076]} rotation={[Math.PI / 2, 0, 0]} color="#facc15" />
+      <Cyl args={[0.02, 0.02, 0.01]} position={[0, 0.155, 0.076]} rotation={[Math.PI / 2, 0, 0]} color="#3f3f46" />
+    </group>
+  )
+}
+
+/** Đèn softbox trên chân đèn ba càng */
+function Softbox({ position, rotation }: { position: V3; rotation: V3 }) {
+  return (
+    <group position={position} rotation={rotation}>
+      {[0, 1, 2].map((i) => (
+        <Box key={i} args={[0.02, 0.02, 0.45]} position={[Math.sin((i * 2 * Math.PI) / 3) * 0.18, 0.08, Math.cos((i * 2 * Math.PI) / 3) * 0.18]} rotation={[0.35, (i * 2 * Math.PI) / 3, 0]} color="#1f2937" />
+      ))}
+      <Cyl args={[0.012, 0.012, 1.55]} position={[0, 0.85, 0]} color="#374151" metalness={0.7} />
+      <group position={[0, 1.6, 0]} rotation={[0.25, 0, 0]}>
+        <Box args={[0.6, 0.6, 0.25]} position={[0, 0, -0.08]} color="#111827" />
+        <mesh position={[0, 0, 0.05]}>
+          <planeGeometry args={[0.56, 0.56]} />
+          <meshStandardMaterial color="#ffffff" emissive="#fff7e6" emissiveIntensity={1.2} side={2} />
+        </mesh>
+      </group>
+    </group>
+  )
+}
+
+/** Máy quay trên chân máy */
+function CameraRig({ position, rotation }: { position: V3; rotation: V3 }) {
+  return (
+    <group position={position} rotation={rotation}>
+      {[0, 1, 2].map((i) => (
+        <Box key={i} args={[0.02, 1.15, 0.02]} position={[Math.sin((i * 2 * Math.PI) / 3) * 0.18, 0.55, Math.cos((i * 2 * Math.PI) / 3) * 0.18]} rotation={[Math.cos((i * 2 * Math.PI) / 3) * -0.16, 0, Math.sin((i * 2 * Math.PI) / 3) * 0.16]} color="#111827" />
+      ))}
+      <group position={[0, 1.18, 0]}>
+        <Soft args={[0.14, 0.13, 0.26]} position={[0, 0.03, 0]} color="#18181b" radius={0.015} />
+        <Cyl args={[0.05, 0.055, 0.12]} position={[0, 0.03, 0.18]} rotation={[Math.PI / 2, 0, 0]} color="#0f172a" metalness={0.4} roughness={0.25} />
+        <Cyl args={[0.04, 0.04, 0.005]} position={[0, 0.03, 0.242]} rotation={[Math.PI / 2, 0, 0]} color="#1e3a8a" metalness={0.9} roughness={0.1} />
+        <Box args={[0.08, 0.06, 0.005]} position={[0.08, 0.06, -0.05]} rotation={[0, Math.PI / 2, 0]} color="#0ea5e9" emissive="#0ea5e9" />
+        <mesh position={[0, 0.11, 0.06]}>
+          <sphereGeometry args={[0.012, 8, 8]} />
+          <meshStandardMaterial color="#ef4444" emissive="#ef4444" emissiveIntensity={2} />
+        </mesh>
+      </group>
+    </group>
+  )
+}
+
+/** Đèn "ON AIR" nhấp nháy khi có người trong phòng đang làm việc */
+function OnAir({ position }: { position: V3 }) {
+  const mat = useRef<MeshStandardMaterial>(null)
+  useFrame(({ clock }) => {
+    const live = AGENTS.some((a) => inMediaRoom(a) && useStore.getState().agents[a.id]?.state === 'work')
+    if (mat.current) mat.current.emissiveIntensity = live ? 1.6 + Math.sin(clock.elapsedTime * 3) * 0.4 : 0.15
+  })
+  const tex = useMemo(() => {
+    const c = document.createElement('canvas')
+    c.width = 256
+    c.height = 80
+    const g = c.getContext('2d')!
+    g.fillStyle = '#ffffff'
+    g.font = 'bold 56px system-ui, sans-serif'
+    g.textAlign = 'center'
+    g.textBaseline = 'middle'
+    g.fillText('ON AIR', 128, 42)
+    const t = new CanvasTexture(c)
+    t.colorSpace = SRGBColorSpace
+    return t
+  }, [])
+  return (
+    <group position={position}>
+      <Soft args={[0.62, 0.22, 0.06]} position={[0, 0, 0]} color="#1f2937" radius={0.02} />
+      <mesh position={[0, 0, 0.032]}>
+        <planeGeometry args={[0.56, 0.17]} />
+        <meshStandardMaterial ref={mat} color="#7f1d1d" emissive="#ef4444" emissiveIntensity={0.15} emissiveMap={tex} map={tex} />
+      </mesh>
+    </group>
+  )
+}
+
+/** Biển tên phòng phát sáng */
+function RoomSign({ position, text }: { position: V3; text: string }) {
+  const tex = useMemo(() => {
+    const c = document.createElement('canvas')
+    c.width = 512
+    c.height = 96
+    const g = c.getContext('2d')!
+    g.fillStyle = '#ffffff'
+    g.font = 'bold 60px system-ui, sans-serif'
+    g.textAlign = 'center'
+    g.textBaseline = 'middle'
+    g.fillText(text, 256, 52)
+    const t = new CanvasTexture(c)
+    t.colorSpace = SRGBColorSpace
+    return t
+  }, [text])
+  return (
+    <mesh position={position}>
+      <planeGeometry args={[1.6, 0.3]} />
+      <meshStandardMaterial map={tex} emissiveMap={tex} emissive="#e879f9" emissiveIntensity={1.4} transparent color="#000" />
+    </mesh>
+  )
+}
+
+function MediaRoom() {
+  useStore((s) => s.namesVersion)
+  const { x0, x1, z0, z1, doorZ } = MEDIA_ROOM
+  const w = x1 - x0
+  const cx = (x0 + x1) / 2
+  const d = z1 - z0
+  const cz = (z0 + z1) / 2
+  const crew = AGENTS.filter(inMediaRoom)
+  const dw = mediaDeskWidth()
+  return (
+    <group>
+      {/* sàn thảm tối + lối vào */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, 0.002, cz]} receiveShadow>
+        <planeGeometry args={[w, d]} />
+        <meshStandardMaterial color="#2a2438" roughness={1} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, 0.006, (doorZ[0] + doorZ[1]) / 2]} receiveShadow>
+        <planeGeometry args={[w, 0.82]} />
+        <meshStandardMaterial color="#4c4363" roughness={1} />
+      </mesh>
+      {/* tường sau, tường phải; tường trước thấp bằng kính để nhìn vào */}
+      <Box args={[w + 0.15, 3, 0.15]} position={[cx, 1.5, z0]} color="#26213a" roughness={0.95} />
+      <Box args={[0.15, 3, d]} position={[x1, 1.5, cz]} color="#26213a" roughness={0.95} />
+      <group position={[cx, 0, z1]}>
+        <Box args={[w, 0.1, 0.08]} position={[0, 0.05, 0]} color="#475569" metalness={0.6} />
+        <mesh position={[0, 0.55, 0]}>
+          <boxGeometry args={[w, 1.0, 0.03]} />
+          <meshStandardMaterial color="#c7d2fe" transparent opacity={0.18} roughness={0.05} />
+        </mesh>
+        <Box args={[w, 0.05, 0.08]} position={[0, 1.07, 0]} color="#475569" metalness={0.6} />
+      </group>
+      {/* tường trái (tầng 2 tách khỏi văn phòng), cửa cầu thang xuống tầng 1 ở lối đi */}
+      <Box args={[0.15, 3, doorZ[0] - z0]} position={[x0, 1.5, (z0 + doorZ[0]) / 2]} color="#26213a" roughness={0.95} />
+      <Box args={[0.15, 3, z1 - doorZ[1]]} position={[x0, 1.5, (doorZ[1] + z1) / 2]} color="#26213a" roughness={0.95} />
+      <StairDoor x={x0} toFloor={0} />
+      <RoomSign position={[cx, 2.45, z1 + 0.05]} text="🎬 MEDIA ROOM" />
+
+      {/* tấm tiêu âm trên tường sau */}
+      {Array.from({ length: 6 * 3 }, (_, i) => {
+        const col = i % 6
+        const r = Math.floor(i / 6)
+        return <Soft key={i} args={[0.5, 0.5, 0.06]} position={[x0 + 0.75 + col * 0.9, 1.75 + r * 0.55, z0 + 0.1]} color={(col + r) % 2 ? ACOUSTIC : '#3b2f5c'} radius={0.03} roughness={1} />
+      })}
+      <OnAir position={[cx, 2.72, z0 + 0.12]} />
+
+      {crew.map((a) => (
+        <Workstation key={a.id} owner={a} />
+      ))}
+      {crew.map((a) => (
+        <TrashBin key={a.id} position={[a.seat[0] + 0.6, 0, DESK_Z + 0.05]} />
+      ))}
+      {/* đồ trên bàn của từng người: micro, loa kiểm âm, đèn viền màu */}
+      {crew.map((a) => {
+        const x = a.seat[0]
+        return (
+          <group key={a.id}>
+            <StudioMic position={[x - 0.62, 0.775, DESK_Z + 0.25]} />
+            <Speaker position={[x - 0.62, 0.775, DESK_Z - 0.25]} rotation={[0, 0.35, 0]} />
+            <Speaker position={[x + 0.62, 0.775, DESK_Z - 0.25]} rotation={[0, -0.35, 0]} />
+            <mesh position={[x, 0.79, DESK_Z - 0.42]}>
+              <boxGeometry args={[Math.min(1.6, dw - 0.2), 0.01, 0.01]} />
+              <meshStandardMaterial color={a.color} emissive={a.color} emissiveIntensity={2} />
+            </mesh>
+          </group>
+        )
+      })}
+
+      {/* góc quay: phông xanh, máy quay, hai đèn softbox */}
+      <Box args={[0.04, 2.4, 2.4]} position={[x1 - 0.1, 1.3, 1.4]} color="#16a34a" roughness={1} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[x1 - 1.1, 0.01, 1.4]}>
+        <planeGeometry args={[2.0, 2.4]} />
+        <meshStandardMaterial color="#16a34a" roughness={1} />
+      </mesh>
+      <Cyl args={[0.05, 0.05, 2.5]} position={[x1 - 0.15, 2.55, 1.4]} rotation={[Math.PI / 2, 0, 0]} color="#1f2937" />
+      <CameraRig position={[x0 + 2.6, 0, 1.4]} rotation={[0, Math.PI / 2, 0]} />
+      <Softbox position={[x1 - 1.6, 0, 0.1]} rotation={[0, -Math.PI / 2 - 0.6, 0]} />
+      <Softbox position={[x1 - 1.6, 0, 2.7]} rotation={[0, -Math.PI / 2 + 0.6, 0]} />
+      {/* ghế đẩu trước phông xanh */}
+      <Cyl args={[0.18, 0.18, 0.05]} position={[x1 - 1.0, 0.62, 1.4]} color="#f8fafc" />
+      <Cyl args={[0.02, 0.02, 0.6]} position={[x1 - 1.0, 0.31, 1.4]} color="#94a3b8" metalness={0.7} />
+      <Cyl args={[0.15, 0.15, 0.02]} position={[x1 - 1.0, 0.01, 1.4]} color="#94a3b8" metalness={0.7} />
+
+      {/* ánh sáng màu tím hồng của phòng */}
+      <pointLight position={[cx, 2.6, -1.2]} intensity={6} distance={7} color="#c084fc" />
+      <pointLight position={[x1 - 1.2, 2.2, 1.4]} intensity={4} distance={5} color="#f0abfc" />
+      <Plant position={[x1 - 0.45, 0, z0 + 0.45]} />
+    </group>
+  )
+}
+
+/** Cửa cầu thang giữa hai tầng (khung cửa tường x, ở lối đi). Bấm vào để sang tầng kia */
+function StairDoor({ x, toFloor }: { x: number; toFloor: Floor }) {
+  const { doorZ } = MEDIA_ROOM
+  const zc = (doorZ[0] + doorZ[1]) / 2
+  const wd = doorZ[1] - doorZ[0]
+  const out = toFloor === 1 ? 1 : -1 // phía sau cửa (lòng cầu thang)
+  const f = FLOORS[toFloor]
+  return (
+    <group
+      onClick={(e) => {
+        e.stopPropagation()
+        useStore.getState().setFloor(toFloor)
+      }}
+      onPointerOver={() => (document.body.style.cursor = 'pointer')}
+      onPointerOut={() => (document.body.style.cursor = 'auto')}
+    >
+      {/* lòng cầu thang tối phía sau cửa + vài bậc */}
+      <Box args={[0.05, 2.7, wd]} position={[x + out * 0.9, 1.35, zc]} color="#1e293b" roughness={1} />
+      {[0, 1, 2, 3].map((i) => (
+        <Box key={i} args={[0.22, 0.12 + i * 0.12, wd - 0.05]} position={[x + out * (0.15 + i * 0.2), (0.12 + i * 0.12) / 2, zc]} color={i % 2 ? '#64748b' : '#94a3b8'} roughness={0.9} />
+      ))}
+      <Box args={[0.9, 0.05, wd]} position={[x + out * 0.45, 2.75, zc]} color="#334155" />
+      <Box args={[0.9, 2.75, 0.05]} position={[x + out * 0.45, 1.37, doorZ[0]]} color="#334155" />
+      <Box args={[0.9, 2.75, 0.05]} position={[x + out * 0.45, 1.37, doorZ[1]]} color="#334155" />
+      {/* khung cửa */}
+      <Box args={[0.2, 2.75, 0.1]} position={[x, 1.37, doorZ[0]]} color="#475569" metalness={0.6} />
+      <Box args={[0.2, 2.75, 0.1]} position={[x, 1.37, doorZ[1]]} color="#475569" metalness={0.6} />
+      <Box args={[0.2, 0.12, wd + 0.1]} position={[x, 2.72, zc]} color="#475569" metalness={0.6} />
+      {/* biển chỉ tầng chìa ra từ tường, mặt quay về phía camera */}
+      <group position={[x - out * 0.9, 2.4, doorZ[1] + 0.12]}>
+        <Soft args={[1.75, 0.36, 0.04]} position={[0, 0, -0.03]} color="#0f172a" radius={0.02} />
+        <RoomSign position={[0, 0, 0]} text={`${toFloor === 1 ? '⬆' : '⬇'} ${f.label.split(' · ')[0]} ${f.icon}`} />
+      </group>
+    </group>
+  )
+}
+
+export function Building() {
+  const floor = useStore((s) => s.floor)
+  return floor === 1 ? <MediaRoom /> : <Office />
+}
+
 export function Office() {
+  useStore((s) => s.namesVersion) // danh sách agent đổi thì vẽ lại khoang, bàn, bảng
   const wood = useWoodTexture()
   return (
     <group>
@@ -826,7 +1167,7 @@ export function Office() {
       <Soft args={[3.3, 1.2, 0.04]} position={[0, 2.35, -3.42]} color="#94a3b8" radius={0.015} />
       <Box args={[3.2, 1.1, 0.02]} position={[0, 2.35, -3.395]} color="#ffffff" roughness={0.3} />
       {AGENTS.map((a, i) => (
-        <group key={a.id} position={[(i - (AGENTS.length - 1) / 2) * 0.6, 2.35, -3.38]}>
+        <group key={a.id} position={[(i - (AGENTS.length - 1) / 2) * Math.min(0.6, 3 / AGENTS.length), 2.35, -3.38]}>
           <Box args={[0.5, 0.06, 0.006]} position={[0, 0.42, 0]} color={a.color} />
           {[0.25, 0.05, -0.15].map((y, j) => (
             <Box key={y} args={[0.18, 0.15, 0.004]} position={[j === 1 ? 0.1 : -0.1, y, 0.004]} rotation={[0, 0, (j - 1) * 0.06]} color={['#fde047', '#f9a8d4', '#86efac'][(i + j) % 3]} />
@@ -854,12 +1195,17 @@ export function Office() {
       </group>
 
       <Cubicles />
-      {AGENTS.map((a) => (
+      {AGENTS.filter((a) => !inMediaRoom(a)).map((a) => (
         <Workstation key={a.id} owner={a} />
       ))}
 
       <MeetingArea />
       <Lounge />
+
+      {/* tường phải, cửa cầu thang lên tầng 2 (phòng media) ở cuối lối đi */}
+      <Box args={[0.15, 3, MEDIA_ROOM.doorZ[0] + 3.5]} position={[MEDIA_ROOM.x0, 1.5, (MEDIA_ROOM.doorZ[0] - 3.5) / 2]} color="#efe9df" roughness={0.95} />
+      <Box args={[0.15, 3, 5 - MEDIA_ROOM.doorZ[1]]} position={[MEDIA_ROOM.x0, 1.5, (MEDIA_ROOM.doorZ[1] + 5) / 2]} color="#efe9df" roughness={0.95} />
+      <StairDoor x={MEDIA_ROOM.x0} toFloor={1} />
 
       {/* góc tiện ích bên phải: máy in, cây nước, tủ hồ sơ */}
       <PrinterStation position={[6.9, 0, 0.5]} rotation={[0, -Math.PI / 2, 0]} />
@@ -870,7 +1216,7 @@ export function Office() {
       <CoatRack position={[-7.4, 0, 2.3]} />
       <FireExtinguisher position={[-7.85, 0.75, 4.6]} />
       <AirConditioner position={[-5.0, 2.7, -3.3]} />
-      {AGENTS.map((a) => (
+      {AGENTS.filter((a) => !inMediaRoom(a)).map((a) => (
         <TrashBin key={a.id} position={[a.seat[0] + 0.6, 0, DESK_Z + 0.05]} />
       ))}
 

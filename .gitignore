@@ -10,3 +10,5 @@ office/agy-workspace/
 office/groups.json
 projects/
 
+office/telegram.json
+*.tsbuildinfo

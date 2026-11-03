@@ -1,7 +1,7 @@
 import { useRef, type ReactNode, type RefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { MathUtils, Vector3, type Group } from 'three'
-import type { Hobby, Role } from '../data/agents'
+import type { Func, Hobby, Role } from '../data/agents'
 import type { AnimState } from '../store'
 import { motions } from '../sim/motion'
 
@@ -19,12 +19,17 @@ const HEAD_SCALE = 1.2 // đầu to kiểu chibi; phụ kiện vẽ theo đầu 
 type HairStyle = 'long' | 'spiky' | 'short' | 'bob'
 
 /** Ngoại hình riêng từng người */
-const LOOKS: Record<Role, { skin: string; hair: string; style: HairStyle; pants: string; shoes: string }> = {
+const LOOKS: Record<Func, { skin: string; hair: string; style: HairStyle; pants: string; shoes: string }> = {
   PM: { skin: '#f6d3b3', hair: '#3b2416', style: 'long', pants: '#1e293b', shoes: '#111827' },
   BE: { skin: '#e9bb8f', hair: '#111111', style: 'spiky', pants: '#334155', shoes: '#f8fafc' },
   FE: { skin: '#f1c7a1', hair: '#2b1a10', style: 'short', pants: '#3f5f8f', shoes: '#7c2d12' },
   QA: { skin: '#f8d8bd', hair: '#5b3420', style: 'bob', pants: '#475569', shoes: '#be123c' },
   Tester: { skin: '#dfac83', hair: '#1c1917', style: 'short', pants: '#3f3f46', shoes: '#f8fafc' },
+  Media: { skin: '#f3cfb1', hair: '#2a1a12', style: 'bob', pants: '#1f2937', shoes: '#f8fafc' },
+  Design: { skin: '#f6d3b3', hair: '#7c2d12', style: 'long', pants: '#334155', shoes: '#f472b6' },
+  Audio: { skin: '#e9bb8f', hair: '#111111', style: 'spiky', pants: '#1e293b', shoes: '#111827' },
+  Video: { skin: '#f1c7a1', hair: '#3f2a1d', style: 'short', pants: '#3f3f46', shoes: '#f8fafc' },
+  khác: { skin: '#eec39a', hair: '#4a2c1a', style: 'short', pants: '#374151', shoes: '#1f2937' },
 }
 
 function Limb({ len, radius, color }: { len: number; radius: number; color: string }) {
@@ -141,7 +146,7 @@ function Face({ eyes, skin }: { eyes: RefObject<Group | null>; skin: string }) {
 }
 
 /** Phụ kiện đội trên đầu (toạ độ theo đầu bán kính 0.14) */
-function HeadAccessory({ role }: { role: Role }) {
+function HeadAccessory({ role }: { role: Func }) {
   switch (role) {
     case 'FE': // mũ nồi kiểu designer
       return (
@@ -212,7 +217,7 @@ function HeadAccessory({ role }: { role: Role }) {
 }
 
 /** Chi tiết trên áo theo vai trò (toạ độ theo hông) */
-function Outfit({ role, color }: { role: Role; color: string }) {
+function Outfit({ role, color }: { role: Func; color: string }) {
   switch (role) {
     case 'PM': // vest màu, cổ sơ mi trắng, cà vạt đỏ
       return (
@@ -342,6 +347,8 @@ function HobbyProp({ hobby, spin }: { hobby: Hobby; spin: RefObject<Group | null
 
 interface Props {
   role: Role
+  /** Vai trò: chọn dáng người, trang phục, phụ kiện */
+  look: Func
   color: string
   hobby: Hobby
   state: AnimState
@@ -407,8 +414,8 @@ const LISTEN_SEATED: ((t: number) => ArmPose)[] = [
   (t) => ({ la: [-0.4, -0.05], ra: [-0.9, -0.3], lf: -0.9, rf: -2.1, hx: 0.05 + nod(t), hy: 0.15 }),
 ]
 
-export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }: Props) {
-  const look = LOOKS[role]
+export function StickFigure({ role, look: func, color, hobby, state, mood = 'quiet', phase }: Props) {
+  const look = LOOKS[func] ?? LOOKS.khác
   const spin = useRef<Group>(null)
   const body = useRef<Group>(null)
   const head = useRef<Group>(null)
@@ -636,7 +643,7 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
             <cylinderGeometry args={[0.045, 0.05, 0.08, 12]} />
             <meshStandardMaterial color={look.skin} roughness={0.7} />
           </mesh>
-          <Outfit role={role} color={color} />
+          <Outfit role={func} color={color} />
 
           {/* đầu */}
           <group ref={head} position={[0, 0.78, 0]}>
@@ -647,7 +654,7 @@ export function StickFigure({ role, color, hobby, state, mood = 'quiet', phase }
               </mesh>
               <Face eyes={eyes} skin={look.skin} />
               <Hair style={look.style} color={look.hair} />
-              <HeadAccessory role={role} />
+              <HeadAccessory role={func} />
             </group>
           </group>
 

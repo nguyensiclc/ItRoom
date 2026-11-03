@@ -4,6 +4,9 @@ import { resetAiBackoff } from '../sim/ai'
 import { AgentDetail } from './AgentDetail'
 import { ChatLauncher, TeamsChat } from './TeamsChat'
 import { Settings } from './Settings'
+import { MediaGallery } from './MediaGallery'
+import { FloorSwitch } from './FloorSwitch'
+import { QuotaBadge } from './QuotaBadge'
 
 const STAGES: { ids: Stage[]; label: string }[] = [
   { ids: ['todo', 'meeting'], label: 'Cần làm' },
@@ -50,7 +53,10 @@ export function Hud() {
         >
           <i /> {aiEnabled ? AI_LABEL[aiStatus] : 'Kịch bản'}
         </button>
+        <FloorSwitch />
+        <QuotaBadge />
         <ChatLauncher />
+        <MediaGallery />
         <button className="settings-launch" onClick={() => useStore.getState().setSettingsOpen(true)} title="Cài đặt tính cách, chuyên môn của agent...">
           ⚙️ Cài đặt
         </button>

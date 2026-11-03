@@ -38,10 +38,40 @@ if (process.env.USE_API_KEY !== '1') {
   delete childEnv.ANTHROPIC_AUTH_TOKEN
 }
 
-const ROLES = ['PM', 'BE', 'FE', 'QA', 'Tester'] as const
-type Role = (typeof ROLES)[number]
+/** 5 agent gốc giữ khung quy trình việc chung (họp → dev → review → test); sếp thêm được agent khác ở trang cài đặt */
+const CORE_ROLES = ['PM', 'BE', 'FE', 'QA', 'Tester']
+/** Mã agent = tên file agents/<Mã>.md */
+type Role = string
 /** Tên mặc định khi file tính cách chưa có dòng `tên:` */
-const DEFAULT_NAMES: Record<Role, string> = { PM: 'Lan', BE: 'Minh', FE: 'Khoa', QA: 'Hà', Tester: 'Tú' }
+const DEFAULT_NAMES: Record<string, string> = { PM: 'Lan', BE: 'Minh', FE: 'Khoa', QA: 'Hà', Tester: 'Tú' }
+/** Vai trò khi làm việc thật (dòng `vai_trò:`): quyết định quyền dùng công cụ */
+const FUNCS = ['PM', 'BE', 'FE', 'QA', 'Tester', 'Media', 'Design', 'Audio', 'Video', 'khác'] as const
+type Func = (typeof FUNCS)[number]
+/** Phòng media: trưởng nhóm (Media), thiết kế đồ hoạ, âm thanh, dựng video */
+const MEDIA_FUNCS: Func[] = ['Media', 'Design', 'Audio', 'Video']
+const MAX_AGENTS = 12
+
+/** Danh sách agent: 5 agent gốc rồi tới agent thêm mới (theo thứ tự tạo, dòng `tạo_lúc:`) */
+function scanRoles(): Role[] {
+  const extra = fs
+    .readdirSync(AGENTS_DIR)
+    .filter((f) => /^[A-Za-z][A-Za-z0-9]*\.md$/.test(f))
+    .map((f) => f.slice(0, -3))
+    .filter((r) => !CORE_ROLES.includes(r))
+    .map((r) => ({ r, at: Number(frontmatter(path.join(AGENTS_DIR, `${r}.md`), 'tạo_lúc')) || 0 }))
+    .sort((a, b) => a.at - b.at || a.r.localeCompare(b.r))
+    .map((x) => x.r)
+  return [...CORE_ROLES, ...extra]
+}
+let ROLES: Role[] = scanRoles()
+const refreshRoles = () => (ROLES = scanRoles())
+
+/** Vai trò của agent: agent gốc = chính mã của nó, agent thêm mới đọc dòng `vai_trò:` */
+function funcOf(role: Role): Func {
+  if (CORE_ROLES.includes(role)) return role as Func
+  const v = frontmatter(path.join(AGENTS_DIR, `${role}.md`), 'vai_trò')
+  return FUNCS.find((f) => f.toLowerCase() === v?.toLowerCase()) ?? 'khác'
+}
 
 const OUTPUT_SCHEMA = JSON.stringify({
   type: 'object',
@@ -111,7 +141,8 @@ function skillsOf(role: Role) {
 /** Luật chung + tính cách (agents/<Role>.md) + chuyên môn (agents/<Role>_skills.md) */
 function systemPrompt(role: Role) {
   const skills = skillsOf(role)
-  return `${readMd(path.join(AGENTS_DIR, '_rules.md'))}\n\n${readMd(path.join(AGENTS_DIR, `${role}.md`))}${skills ? `\n\n${skills}` : ''}`
+  const team = ROLES.map((r) => `- ${nameOf(r)} (@${r})${r === role ? ' — chính bạn' : ''}: ${frontmatter(path.join(AGENTS_DIR, `${r}.md`), 'chức_danh') ?? funcOf(r)}`).join('\n')
+  return `${readMd(path.join(AGENTS_DIR, '_rules.md'))}\n\n# Thành viên phòng IT hiện tại\n${team}\n\n${readMd(path.join(AGENTS_DIR, `${role}.md`))}${skills ? `\n\n${skills}` : ''}`
 }
 
 function ensureChatFile() {
@@ -122,7 +153,7 @@ function ensureChatFile() {
 }
 
 /** Tên agent đọc từ `tên:` trong agents/<Role>.md (đổi được ở trang cài đặt) */
-const nameOf = (role: Role) => frontmatter(path.join(AGENTS_DIR, `${role}.md`), 'tên') ?? DEFAULT_NAMES[role]
+const nameOf = (role: Role) => frontmatter(path.join(AGENTS_DIR, `${role}.md`), 'tên') ?? DEFAULT_NAMES[role] ?? role
 const names = () => Object.fromEntries(ROLES.map((r) => [r, nameOf(r)])) as Record<Role, string>
 const who = (role: Role) => `${role} (${nameOf(role)})`
 const mdLine = (speaker: string, text: string) => `- ${now()} **${speaker}:** ${text.replace(/\s+/g, ' ')}\n`
@@ -176,6 +207,17 @@ function appendChannel(role: Role, channel: Channel, speaker: string, text: stri
 function messages(file: string) {
   if (!fs.existsSync(file)) return []
   return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.startsWith('- '))
+}
+
+/**
+ * Bảng tiến độ chung: việc sếp giao và kết quả làm việc thật (review, fix, test, merge...) lấy từ nhật ký office/chat.md.
+ * Mọi agent đều đọc cùng một bảng trước khi nói, để không ai trả lời theo trí nhớ cũ (vd BE tưởng còn chờ review khi việc đã merge).
+ */
+function progressBoard(cap = 10) {
+  return messages(CHAT_FILE)
+    .filter((l) => /\*\*Sếp giao việc|· làm việc thật/.test(l))
+    .slice(-cap)
+    .join('\n')
 }
 
 // Trạng thái từng agent do giao diện gửi lên (đang giữ task gì, đang rảnh chơi gì...)
@@ -303,10 +345,77 @@ async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** `resume`: nối tiếp session có sẵn; không thì tạo session mới với đúng id đó */
+// ---------- quota còn lại ----------
+
+interface QuotaWindow {
+  /** % đã dùng (0-100) */
+  used: number
+  /** Thời điểm làm mới (ms) */
+  resetsAt: number | null
+  status: string
+}
+/** Claude: lấy từ sự kiện rate_limit_event mà Claude CLI trả về trong mỗi lượt gọi (stream-json) */
+let claudeQuota: { fiveHour: QuotaWindow | null; sevenDay: QuotaWindow | null; status: string; updatedAt: number } | null = null
+/** Antigravity (agy) không báo con số quota: chỉ ghi lại lần gọi thành công / lỗi hết quota gần nhất */
+const agyHealth: { lastOk: number | null; lastError: { at: number; text: string; quota: boolean } | null } = { lastOk: null, lastError: null }
+
+function noteClaudeQuota(info: Record<string, unknown>) {
+  const win = (w: unknown): QuotaWindow | null => {
+    if (!w || typeof w !== 'object') return null
+    const o = w as { utilization?: number; resetsAt?: number; status?: string }
+    if (typeof o.utilization !== 'number') return null
+    return { used: Math.round(o.utilization * 1000) / 10, resetsAt: typeof o.resetsAt === 'number' ? o.resetsAt * 1000 : null, status: o.status ?? '' }
+  }
+  const u = (info.unifiedWindows ?? {}) as Record<string, unknown>
+  claudeQuota = { fiveHour: win(u.five_hour), sevenDay: win(u.seven_day), status: String(info.status ?? ''), updatedAt: Date.now() }
+}
+
+/** Đọc output stream-json của Claude CLI: ghi lại quota, trả về dòng kết quả cuối (giống --output-format json) */
+function parseClaudeStream(out: string) {
+  let result: Record<string, unknown> | null = null
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue
+    let o: Record<string, unknown>
+    try {
+      o = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (o.type === 'rate_limit_event' && o.rate_limit_info) noteClaudeQuota(o.rate_limit_info as Record<string, unknown>)
+    if (o.type === 'result') result = o
+  }
+  if (!result) throw new Error('không có kết quả')
+  return result
+}
+
+/** Hỏi nhanh Claude (model nhẹ nhất) chỉ để đọc quota, khi chưa có số liệu hoặc số liệu đã cũ */
+let quotaProbe: Promise<void> | null = null
+function probeClaudeQuota() {
+  quotaProbe ??= new Promise<void>((resolve) => {
+    const child = spawn(CLAUDE_BIN, ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'haiku', '--tools', '', '--no-session-persistence'], { cwd: ROOT, windowsHide: true, env: childEnv })
+    let out = ''
+    const timer = setTimeout(() => child.kill(), 60_000)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (d) => (out += d))
+    child.on('error', () => resolve())
+    child.on('close', () => {
+      clearTimeout(timer)
+      try {
+        parseClaudeStream(out)
+      } catch {
+        // không đọc được thì giữ số cũ
+      }
+      resolve()
+    })
+    child.stdin.end('Trả lời đúng một chữ: ok')
+  }).finally(() => (quotaProbe = null))
+  return quotaProbe
+}
+
 function runClaude(system: string, prompt: string, sessionId: string, resume: boolean, model?: string): Promise<Line> {
   const args = [
     '-p',
-    '--output-format', 'json',
+    '--output-format', 'stream-json', '--verbose', // stream-json để đọc được quota (rate_limit_event)
     '--json-schema', OUTPUT_SCHEMA,
     '--system-prompt', system,
     '--tools', '', // chỉ nói chuyện, không đụng file hay lệnh
@@ -330,7 +439,7 @@ function runClaude(system: string, prompt: string, sessionId: string, resume: bo
     child.on('close', (code) => {
       clearTimeout(timer)
       try {
-        const result = JSON.parse(out) as {
+        const result = parseClaudeStream(out) as {
           is_error?: boolean
           result?: string
           structured_output?: { title?: unknown; area?: unknown; text?: unknown }
@@ -587,7 +696,14 @@ async function runEngine(role: Role, s: AgentSession, prompt: string, model?: st
   if ((s.engine ?? 'claude') === 'claude') {
     line = { ...(await runClaude(system, `${update}${prompt}`, s.id, !first, model)), via: 'gọi từng lần' }
   } else {
-    line = await agyTurn(role, s, `${first ? `${system}\n\n---\n\n` : update}${prompt}\n\n${AGY_FORMAT}`, model)
+    try {
+      line = await agyTurn(role, s, `${first ? `${system}\n\n---\n\n` : update}${prompt}\n\n${AGY_FORMAT}`, model)
+      agyHealth.lastOk = Date.now()
+    } catch (e) {
+      const text = (e as Error).message
+      agyHealth.lastError = { at: Date.now(), text: text.slice(0, 200), quota: isOutOfTokens(text) }
+      throw e
+    }
   }
   s.promptHash = promptHash(system)
   return line
@@ -604,6 +720,12 @@ function speak(role: Role, situation: string, channel?: Channel, kind: Kind = 'w
     if (engine !== 'agy') stopWorker(role) // vừa đổi `cli:` sang claude
     let s = sessionOf(role, engine)
     const parts = [`Trạng thái hiện tại của bạn: ${statuses[role] ?? 'không rõ'}`]
+    const board = progressBoard()
+    if (board)
+      parts.push(
+        'Bảng tiến độ chung của cả team (nguồn sự thật, dòng dưới cùng là mới nhất). Khi nói về tiến độ, việc đã xong hay đang chờ ai, ' +
+          `hãy dựa vào bảng này chứ không dựa vào trí nhớ cũ của bạn; việc có "đã merge vào" là đã hoàn thành:\n${board}`,
+      )
     const reads: ((target: AgentSession) => void)[] = []
     if (channel && channel !== 'team') {
       const { file, title } = channelFile(role, channel)
@@ -681,6 +803,72 @@ function projectConfig() {
   return { dir: path.resolve(ROOT, dir), base: /^[\w./-]+$/.test(base) ? base : 'main' }
 }
 
+// ---------- sản phẩm của phòng media (thư mục media/ trong dự án) ----------
+
+const MEDIA_TYPES: Record<string, { kind: 'audio' | 'image' | 'video'; mime: string }> = {
+  '.m4a': { kind: 'audio', mime: 'audio/mp4' },
+  '.mp3': { kind: 'audio', mime: 'audio/mpeg' },
+  '.wav': { kind: 'audio', mime: 'audio/wav' },
+  '.aiff': { kind: 'audio', mime: 'audio/aiff' },
+  '.png': { kind: 'image', mime: 'image/png' },
+  '.jpg': { kind: 'image', mime: 'image/jpeg' },
+  '.jpeg': { kind: 'image', mime: 'image/jpeg' },
+  '.gif': { kind: 'image', mime: 'image/gif' },
+  '.webp': { kind: 'image', mime: 'image/webp' },
+  '.svg': { kind: 'image', mime: 'image/svg+xml' },
+  '.mp4': { kind: 'video', mime: 'video/mp4' },
+  '.webm': { kind: 'video', mime: 'video/webm' },
+  '.mov': { kind: 'video', mime: 'video/quicktime' },
+}
+
+function mediaList() {
+  const p = projectConfig()
+  if (!p) return []
+  const root = path.join(p.dir, 'media')
+  const out: { path: string; kind: string; size: number; time: number }[] = []
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4 || !fs.existsSync(dir)) return
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) walk(full, depth + 1)
+      else {
+        const t = MEDIA_TYPES[path.extname(e.name).toLowerCase()]
+        if (!t) continue
+        const st = fs.statSync(full)
+        out.push({ path: path.relative(p.dir, full), kind: t.kind, size: st.size, time: st.mtimeMs })
+      }
+    }
+  }
+  walk(root, 0)
+  return out.sort((a, b) => b.time - a.time)
+}
+
+/** Gửi một file media, có hỗ trợ Range (Safari / iPhone cần để phát video) */
+function sendMedia(req: http.IncomingMessage, res: http.ServerResponse, rel: string) {
+  const p = projectConfig()
+  if (!p) return send(res, 404, { error: 'Chưa có dự án' })
+  const root = path.join(p.dir, 'media')
+  const full = path.resolve(p.dir, rel)
+  const t = MEDIA_TYPES[path.extname(full).toLowerCase()]
+  if (!full.startsWith(root + path.sep) || !t || !fs.existsSync(full)) return send(res, 404, { error: 'Không có file này' })
+  const size = fs.statSync(full).size
+  const headers: Record<string, string | number> = { 'Content-Type': t.mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' }
+  if (t.mime === 'image/svg+xml') headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'" // SVG do agent viết: không cho chạy script
+  const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+  if (m && (m[1] || m[2])) {
+    const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]))
+    const end = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
+    if (start > end || start >= size) {
+      res.writeHead(416, { 'Content-Range': `bytes */${size}` })
+      return res.end()
+    }
+    res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': end - start + 1 })
+    return fs.createReadStream(full, { start, end }).pipe(res)
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': size })
+  fs.createReadStream(full).pipe(res)
+}
+
 function git(cwd: string, args: string[]): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     const child = spawn('git', ['-c', 'user.name=IT Room', '-c', 'user.email=itroom@local', ...args], { cwd, windowsHide: true })
@@ -692,6 +880,140 @@ function git(cwd: string, args: string[]): Promise<{ code: number; out: string }
     child.on('error', (e) => resolve({ code: -1, out: e.message }))
     child.on('close', (code) => resolve({ code: code ?? -1, out: out.trim() }))
   })
+}
+
+// ---------- GitHub: đăng nhập (gh), nối repo, push ----------
+// Repo GitHub của dự án = remote `origin` trong thư mục dự án (mỗi dự án một repo).
+// Tự push sau mỗi lần merge bật / tắt bằng dòng `auto_push: true` trong agents/_project.md.
+
+function ghRun(args: string[], cwd = ROOT): Promise<{ code: number; out: string }> {
+  return new Promise((resolve) => {
+    const child = spawn('gh', args, { cwd, windowsHide: true, env: { ...process.env, GH_PROMPT_DISABLED: '1' } })
+    let out = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (d) => (out += d))
+    child.stderr.on('data', (d) => (out += d))
+    child.on('error', (e) => resolve({ code: -1, out: e.message }))
+    child.on('close', (code) => resolve({ code: code ?? -1, out: out.trim() }))
+  })
+}
+
+/** Ghi một dòng `key: value` vào phần đầu file .md (thêm nếu chưa có) */
+function setFrontmatter(file: string, key: string, value: string) {
+  const text = fs.readFileSync(file, 'utf8')
+  const re = new RegExp(`^${key}:.*$`, 'm')
+  fs.writeFileSync(file, re.test(text) ? text.replace(re, `${key}: ${value}`) : text.replace(/^---\r?\n/, `---\n${key}: ${value}\n`))
+}
+
+const autoPush = () => frontmatter(PROJECT_FILE, 'auto_push') === 'true'
+
+/** Tài khoản GitHub đang đăng nhập trong gh; null = chưa đăng nhập / token hết hạn */
+async function githubUser(): Promise<string | null> {
+  const r = await ghRun(['api', 'user', '--jq', '.login'])
+  return r.code === 0 && r.out ? r.out.split('\n')[0] : null
+}
+
+async function remoteOf(dir: string) {
+  const r = await git(dir, ['remote', 'get-url', 'origin'])
+  return r.code === 0 ? r.out : null
+}
+
+/** "owner/repo" hoặc link GitHub → { slug, url }; không hợp lệ thì null */
+function parseRepo(input: string) {
+  const m = input.trim().match(/^(?:https:\/\/github\.com\/|git@github\.com:)?([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/)
+  return m ? { slug: `${m[1]}/${m[2]}`, url: `https://github.com/${m[1]}/${m[2]}.git` } : null
+}
+
+/** Push branch chính lên origin (dùng thông tin đăng nhập của gh) */
+async function pushBase(p: { dir: string; base: string }) {
+  if (!(await remoteOf(p.dir))) return { ok: false, out: 'Dự án chưa nối repo GitHub' }
+  await ghRun(['auth', 'setup-git']) // để git dùng token của gh
+  const r = await git(p.dir, ['push', '-u', 'origin', p.base])
+  appendLog('Hệ thống', r.code === 0 ? `đã push ${p.base} lên GitHub` : `push lên GitHub lỗi: ${r.out.slice(0, 200)}`)
+  return { ok: r.code === 0, out: r.out.slice(-500) }
+}
+
+/** Đăng nhập GitHub bằng mã thiết bị: gh in mã 1 lần, sếp mở github.com/login/device và nhập mã */
+type GhLoginState = 'idle' | 'starting' | 'waiting' | 'ok' | 'error'
+const ghLogin: { state: GhLoginState; code?: string; url?: string; error?: string; child?: ReturnType<typeof spawn> } = { state: 'idle' }
+
+function stopGhLogin() {
+  ghLogin.child?.kill()
+  ghLogin.child = undefined
+}
+
+function startGhLogin(): Promise<void> {
+  stopGhLogin()
+  Object.assign(ghLogin, { state: 'starting', code: undefined, url: undefined, error: undefined })
+  // BROWSER=true: không mở trình duyệt trên máy chủ, sếp tự mở link (có thể trên điện thoại)
+  const child = spawn('gh', ['auth', 'login', '-h', 'github.com', '-p', 'https', '-w', '--skip-ssh-key'], {
+    cwd: ROOT,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: { ...process.env, BROWSER: 'true' },
+  })
+  ghLogin.child = child
+  let out = ''
+  return new Promise((resolve) => {
+    const onData = (d: Buffer) => {
+      out += d.toString()
+      const code = out.match(/one-time code: ([A-Z0-9]{4}-[A-Z0-9]{4})/)?.[1]
+      if (code && ghLogin.state === 'starting') {
+        Object.assign(ghLogin, { state: 'waiting', code, url: out.match(/https:\/\/github\.com\/login\/device\S*/)?.[0] ?? 'https://github.com/login/device' })
+        child.stdin?.write('\n') // qua bước "Press Enter to open github.com in your browser"
+        resolve()
+      }
+    }
+    child.stdout?.on('data', onData)
+    child.stderr?.on('data', onData)
+    child.on('error', (e) => {
+      Object.assign(ghLogin, { state: 'error', error: `Không chạy được gh: ${e.message}` })
+      resolve()
+    })
+    child.on('close', (code) => {
+      if (ghLogin.child !== child) return resolve()
+      ghLogin.child = undefined
+      if (code === 0) {
+        Object.assign(ghLogin, { state: 'ok', code: undefined, url: undefined })
+        void ghRun(['auth', 'setup-git'])
+        console.log('[github] đã đăng nhập GitHub từ trang cài đặt')
+      } else Object.assign(ghLogin, { state: 'error', code: undefined, error: out.split('\n').filter(Boolean).pop() ?? `gh thoát mã ${code}` })
+      resolve()
+    })
+  })
+}
+
+async function githubView() {
+  const p = projectConfig()
+  const busy = ghLogin.state === 'starting' || ghLogin.state === 'waiting'
+  const { state, code, url, error } = ghLogin
+  return {
+    user: busy ? null : await githubUser(),
+    login: { state, code, url, error },
+    project: p && fs.existsSync(path.join(p.dir, '.git')) ? { dir: path.relative(ROOT, p.dir) || p.dir, base: p.base, remote: await remoteOf(p.dir), autoPush: autoPush() } : null,
+  }
+}
+
+/** Nối dự án với repo GitHub: tạo repo mới (gh repo create) hoặc dùng repo có sẵn */
+async function connectRepo(input: string, create: boolean, isPrivate: boolean) {
+  const p = projectConfig()
+  if (!p || !fs.existsSync(path.join(p.dir, '.git'))) return { error: 'Chưa có dự án (agents/_project.md)' }
+  if (create) {
+    const name = input.trim()
+    if (!/^([\w.-]+\/)?[\w.-]+$/.test(name)) return { error: 'Tên repo chỉ gồm chữ, số, . _ - (vd my-app hoặc owner/my-app)' }
+    if (await remoteOf(p.dir)) await git(p.dir, ['remote', 'remove', 'origin'])
+    const r = await ghRun(['repo', 'create', name, isPrivate ? '--private' : '--public', '--source', p.dir, '--remote', 'origin'], p.dir)
+    if (r.code !== 0) return { error: `Tạo repo lỗi: ${r.out.slice(0, 300)}` }
+  } else {
+    const repo = parseRepo(input)
+    if (!repo) return { error: 'Nhập dạng owner/repo hoặc link https://github.com/owner/repo' }
+    const has = await remoteOf(p.dir)
+    const r = await git(p.dir, has ? ['remote', 'set-url', 'origin', repo.url] : ['remote', 'add', 'origin', repo.url])
+    if (r.code !== 0) return { error: r.out.slice(0, 300) }
+  }
+  appendLog('Sếp', `nối dự án với GitHub: ${await remoteOf(p.dir)}`)
+  return { ok: true }
 }
 
 /** Tự động khởi tạo thư mục dự án mới trong ROOT/projects/<slug> do PM Lan chủ trì */
@@ -752,6 +1074,8 @@ function withProject<T>(fn: () => Promise<T>): Promise<T> {
   return next
 }
 
+/** Phòng media: đọc giọng (say), đổi định dạng audio (afconvert), ảnh (SVG → PNG bằng tools/svg2png.mjs, sips), video (ffmpeg) */
+const MEDIA_TOOLS = ['say', 'afconvert', 'afinfo', 'sips', 'ffmpeg', 'ffprobe', 'python3', 'python', 'node', 'ls', 'mkdir', 'cp', 'mv'].map((c) => `Bash(${c}:*)`)
 const RUN_TOOLS = ['npm', 'npx', 'node', 'pnpm', 'yarn', 'python', 'py', 'pip', 'pytest', 'tsc', 'ls', 'cat', 'mkdir'].map((c) => `Bash(${c}:*)`)
 const GIT_READ = ['git status', 'git diff', 'git log', 'git show'].map((c) => `Bash(${c}:*)`)
 const READ_TOOLS = ['Read', 'Glob', 'Grep', ...GIT_READ]
@@ -759,8 +1083,10 @@ const WRITE_TOOLS = ['Edit', 'MultiEdit', 'Write']
 
 /** Công cụ theo vai trò: dev và tester sửa file + chạy lệnh, QA chỉ đọc, PM đọc và viết tài liệu */
 function toolsFor(role: Role) {
-  if (role === 'BE' || role === 'FE' || role === 'Tester') return [...READ_TOOLS, ...WRITE_TOOLS, ...RUN_TOOLS]
-  if (role === 'PM') return [...READ_TOOLS, ...WRITE_TOOLS]
+  const f = funcOf(role)
+  if (f === 'BE' || f === 'FE' || f === 'Tester') return [...READ_TOOLS, ...WRITE_TOOLS, ...RUN_TOOLS]
+  if (f === 'PM') return [...READ_TOOLS, ...WRITE_TOOLS]
+  if (MEDIA_FUNCS.includes(f)) return [...READ_TOOLS, ...WRITE_TOOLS, ...MEDIA_TOOLS]
   return READ_TOOLS
 }
 
@@ -769,7 +1095,7 @@ const WORK_SCHEMA = JSON.stringify({
   properties: {
     summary: { type: 'string' },
     verdict: { type: 'string', enum: ['done', 'pass', 'fail'] },
-    area: { type: 'string', enum: ['', 'BE', 'FE'] },
+    area: { type: 'string', enum: ['', 'BE', 'FE', 'design', 'audio', 'video'] },
     details: { type: 'string' },
   },
   required: ['summary', 'verdict', 'area', 'details'],
@@ -779,7 +1105,7 @@ const WORK_SCHEMA = JSON.stringify({
 interface WorkResult {
   summary: string
   verdict: 'done' | 'pass' | 'fail'
-  area: '' | 'BE' | 'FE'
+  area: '' | 'BE' | 'FE' | 'design' | 'audio' | 'video'
   details: string
 }
 
@@ -793,10 +1119,22 @@ Bạn đang làm việc thật trong thư mục dự án (thư mục hiện tạ
 - Không chạy lệnh chờ mãi (dev server, watch); chạy build/test một lần rồi dừng.
 - Trả lời cuối cùng theo đúng schema: summary là 1-2 câu tiếng Việt kể ngắn đã làm gì (để nói với đồng đội), details là chi tiết (file đã đổi, cách chạy, lỗi cụ thể nếu có).`
 
+/** Luật riêng cho agent phòng media (vai trò Media) */
+const SVG2PNG = path.join(ROOT, 'tools', 'svg2png.mjs')
+const MEDIA_RULES = `
+# Phòng media: làm audio, ảnh, video
+
+Bạn làm ở phòng media. Sản phẩm để trong thư mục \`media/\` của dự án: \`media/audio/\`, \`media/images/\`, \`media/video/\` (tạo thư mục nếu chưa có). Đặt tên file ngắn, không dấu, gạch nối (vd \`gioi-thieu-app.m4a\`).
+Lệnh shell chỉ được dùng: say, afconvert, afinfo, sips, ffmpeg, ffprobe, python3, node, ls, mkdir, cp, mv (không có thư viện ảnh Python như PIL).
+- Audio / lồng tiếng: \`say -v Linh -o /tmp/x.aiff "nội dung tiếng Việt"\` (giọng Linh tiếng Việt; tiếng Anh dùng -v Samantha; file .aiff tạm để ở /tmp), rồi \`afconvert -f m4af -d aac /tmp/x.aiff media/audio/x.m4a\`. Nhạc nền / hiệu ứng đơn giản: tạo bằng ffmpeg (vd \`ffmpeg -f lavfi -i "sine=frequency=440:duration=2"\`).
+- Ảnh: vẽ bằng SVG (viết file .svg: banner, logo, minh hoạ, poster; chữ tiếng Việt dùng font-family="Helvetica, Arial"), rồi xuất PNG đúng cỡ bằng \`node ${SVG2PNG} media/images/x.svg media/images/x.png 1280 720\` (rộng cao tuỳ ý; công cụ này cũng nhận file .html để dựng ảnh phức tạp bằng HTML/CSS). Mở xem lại ảnh PNG (Read) để tự kiểm tra bố cục trước khi báo xong. Chỉnh cỡ / đổi định dạng ảnh: sips.
+- Video: dựng bằng ffmpeg từ ảnh PNG + audio (vd slideshow: \`ffmpeg -y -loop 1 -t 4 -i a.png -loop 1 -t 4 -i b.png -i voice.m4a -filter_complex "[0:v][1:v]concat=n=2:v=1,format=yuv420p[v]" -map "[v]" -map 2:a -shortest media/video/x.mp4\`). Xuất mp4 (H.264 + AAC) để xem được trên trình duyệt và điện thoại. Nếu máy chưa có ffmpeg thì báo trong details và vẫn làm phần ảnh / audio.
+- Mỗi lần xong, kiểm tra file thật sự tạo ra (ls, ffprobe, afinfo) và liệt kê đường dẫn file trong details.`
+
 function runClaudeWork(role: Role, cwd: string, system: string, prompt: string, sessionId: string, resume: boolean, model?: string): Promise<WorkResult> {
   const args = [
     '-p',
-    '--output-format', 'json',
+    '--output-format', 'stream-json', '--verbose',
     '--json-schema', WORK_SCHEMA,
     '--system-prompt', system,
     '--allowedTools', ...toolsFor(role),
@@ -818,13 +1156,13 @@ function runClaudeWork(role: Role, cwd: string, system: string, prompt: string, 
     child.on('close', (code) => {
       clearTimeout(timer)
       try {
-        const r = JSON.parse(out) as { is_error?: boolean; result?: string; structured_output?: Partial<WorkResult> }
+        const r = parseClaudeStream(out) as { is_error?: boolean; result?: string; structured_output?: Partial<WorkResult> }
         const so = r.structured_output
         if (r.is_error || !so || typeof so.summary !== 'string') throw new Error(r.result ?? 'không có structured_output')
         resolve({
           summary: so.summary.trim().slice(0, 400),
           verdict: so.verdict === 'pass' || so.verdict === 'fail' ? so.verdict : 'done',
-          area: so.area === 'BE' || so.area === 'FE' ? so.area : '',
+          area: so.area && ['BE', 'FE', 'design', 'audio', 'video'].includes(so.area) ? so.area : '',
           details: (so.details ?? '').trim().slice(0, 4000),
         })
       } catch (e) {
@@ -835,7 +1173,10 @@ function runClaudeWork(role: Role, cwd: string, system: string, prompt: string, 
   })
 }
 
-type WorkStep = 'code' | 'fix' | 'review' | 'test' | 'personal'
+type WorkStep = 'code' | 'fix' | 'review' | 'test' | 'personal' | MediaStep
+/** Dây chuyền phòng media: kịch bản → thiết kế → âm thanh → dựng video → trưởng nhóm duyệt (→ sửa) */
+type MediaStep = 'script' | 'design' | 'audio' | 'edit' | 'mreview' | 'mfix'
+const MEDIA_STEPS: MediaStep[] = ['script', 'design', 'audio', 'edit', 'mreview', 'mfix']
 
 interface WorkRequest {
   role: Role
@@ -849,7 +1190,8 @@ interface WorkRequest {
   merge: boolean
 }
 
-const AUTHORS: Record<Role, string> = { PM: 'pm', BE: 'be', FE: 'fe', QA: 'qa', Tester: 'tester' }
+/** Email tác giả commit: <mã viết thường>@itroom.local */
+const authorOf = (role: Role) => role.toLowerCase()
 
 function workPrompt(w: WorkRequest, base: string, diff: string) {
   const head = `Việc: "${w.title}" (yêu cầu của sếp: "${w.request}"). Branch: ${w.branch}.`
@@ -864,6 +1206,23 @@ function workPrompt(w: WorkRequest, base: string, diff: string) {
       return `${head}\nKiểm thử việc này: chạy test có sẵn (vd npm test), nếu chưa có thì viết test hoặc chạy thử để xác minh yêu cầu. verdict = "pass" nếu đạt, "fail" nếu có bug; khi fail ghi bug và cách tái hiện trong details, area = phần gây lỗi ("BE" hoặc "FE").`
     case 'personal':
       return `${head}\nĐây là việc sếp giao riêng cho bạn. Làm trực tiếp trong dự án theo vai trò của bạn. verdict = "done" khi xong, "fail" nếu không làm được.`
+  }
+  // ---- dây chuyền phòng media: mọi file của việc này nằm trong một thư mục riêng ----
+  const dir = `media/${slugify(w.title) || 'du-an'}`
+  const brief = `${dir}/kich-ban.md`
+  switch (w.step) {
+    case 'script':
+      return `${head}\nBạn là trưởng nhóm media. Viết kịch bản / storyboard vào \`${brief}\` (KHÔNG tự làm ảnh, audio, video: việc đó của đồng đội). Gồm: mục tiêu & người xem, thông điệp chính, thời lượng tổng, phong cách (bảng màu mã hex, font, cảm xúc), bảng cảnh (số cảnh, thời lượng giây, hình ảnh mô tả cụ thể để vẽ, chữ hiện trên hình, lời thoại tiếng Việt), nhạc nền (tâm trạng, tốc độ), và giao việc rõ ràng cho: Thiết kế (ảnh từng cảnh: ${dir}/images/canh-1.png..., 1280x720), Âm thanh (lời thoại từng cảnh ${dir}/audio/canh-1.m4a... và ${dir}/audio/nhac-nen.m4a), Dựng video (${dir}/video/<tên>.mp4). Nếu sếp chỉ xin ảnh hoặc audio thì bỏ phần không cần. ${w.notes ? `Ghi chú: ${w.notes}` : ''} verdict = "done"; summary kể ngắn ý tưởng chính.`
+    case 'design':
+      return `${head}\nBạn là thiết kế đồ hoạ của phòng media. Đọc \`${brief}\` rồi làm ảnh cho từng cảnh đúng phong cách trong đó: viết SVG và xuất PNG 1280x720 vào ${dir}/images/ (canh-1.svg/png, canh-2...). Mở xem lại từng PNG để kiểm tra chữ tiếng Việt, bố cục, độ tương phản. ${w.notes ? `Ghi chú của trưởng nhóm: ${w.notes}` : ''} verdict = "done" khi đủ ảnh; details liệt kê file.`
+    case 'audio':
+      return `${head}\nBạn là âm thanh của phòng media. Đọc \`${brief}\` rồi thu lời thoại từng cảnh (giọng Linh) vào ${dir}/audio/canh-1.m4a, canh-2.m4a... và làm nhạc nền nhẹ đúng tâm trạng vào ${dir}/audio/nhac-nen.m4a (dài bằng cả video, fade in/out, âm lượng vừa phải). Đo thời lượng từng file (afinfo / ffprobe). ${w.notes ? `Ghi chú của trưởng nhóm: ${w.notes}` : ''} verdict = "done"; details liệt kê từng file kèm thời lượng giây (người dựng video cần để canh cảnh).`
+    case 'edit':
+      return `${head}\nBạn là người dựng video của phòng media. Đọc \`${brief}\`, dùng ảnh trong ${dir}/images/ và audio trong ${dir}/audio/ để dựng video mp4 (H.264 + AAC, 1280x720, yuv420p) vào ${dir}/video/: mỗi cảnh dài bằng lời thoại của cảnh đó (+0.5 giây nghỉ), chuyển cảnh mượt (xfade/fade), có thể zoom nhẹ (zoompan), nhạc nền nhỏ hơn lời thoại (khoảng -18 dB) và fade cuối. Kiểm tra bằng ffprobe và xem vài khung hình (xuất PNG rồi Read). ${w.notes ? `Thông tin từ đồng đội: ${w.notes}` : ''} verdict = "done"; details ghi đường dẫn video và thời lượng.`
+    case 'mreview':
+      return `${head}\nBạn là trưởng nhóm media, duyệt sản phẩm trong ${dir}/ so với \`${brief}\`: kiểm tra video bằng ffprobe (thời lượng, có tiếng), xuất vài khung hình ra PNG rồi xem (Read), xem ảnh, đối chiếu lời thoại / chữ / màu với kịch bản. Không tự sửa. verdict = "pass" nếu đạt; "fail" nếu cần sửa, khi đó area = phần cần sửa ("design", "audio" hoặc "video") và details ghi từng điểm cụ thể.`
+    case 'mfix':
+      return `${head}\nTrưởng nhóm media yêu cầu sửa phần của bạn trong ${dir}/:\n${w.notes}\nSửa đúng các điểm trên (giữ nguyên tên file để người dựng video dùng lại). verdict = "done" khi xong.`
   }
 }
 
@@ -888,7 +1247,7 @@ function doWork(w: WorkRequest) {
     const t0 = Date.now()
     console.log(`[làm việc] ${w.role} · ${w.step} · ${w.branch}`)
     const model = frontmatter(PROJECT_FILE, 'code_model') ?? modelFor('work', 'claude')
-    const system = `${systemPrompt(w.role)}\n${WORK_RULES}`
+    const system = `${systemPrompt(w.role)}\n${WORK_RULES}${MEDIA_FUNCS.includes(funcOf(w.role)) ? `\n${MEDIA_RULES}` : ''}`
     const prompt = `${work.turns > 0 ? profileUpdate(system, work.promptHash) : ''}${workPrompt(w, p.base, diff)}`
     let result: WorkResult
     try {
@@ -906,7 +1265,7 @@ function doWork(w: WorkRequest) {
     let commit = ''
     if ((await git(p.dir, ['status', '--porcelain'])).out) {
       await git(p.dir, ['add', '-A'])
-      const c = await git(p.dir, ['commit', '-m', `${w.title}: ${result.summary}`.slice(0, 200), `--author=${who(w.role)} <${AUTHORS[w.role]}@itroom.local>`])
+      const c = await git(p.dir, ['commit', '-m', `${w.title}: ${result.summary}`.slice(0, 200), `--author=${who(w.role)} <${authorOf(w.role)}@itroom.local>`])
       if (c.code === 0) commit = (await git(p.dir, ['rev-parse', '--short', 'HEAD'])).out
     }
 
@@ -920,9 +1279,17 @@ function doWork(w: WorkRequest) {
         result.details += `\n(merge vào ${p.base} lỗi: ${m.out.slice(0, 300)})`
       }
     }
+    // bật tự push: merge xong thì đẩy branch chính lên GitHub
+    let pushed = false
+    if (merged && autoPush() && (await remoteOf(p.dir))) {
+      const r = await pushBase(p)
+      pushed = r.ok
+      if (!r.ok) result.details += `\n(push lên GitHub lỗi: ${r.out.slice(0, 300)})`
+    }
     const seconds = Math.round((Date.now() - t0) / 1000)
-    appendLog(`${who(w.role)} · làm việc thật (${w.step})`, `${result.summary} _(${w.branch}${commit ? ` · commit ${commit}` : ''}${merged ? ` · đã merge vào ${p.base}` : ''} · ${seconds}s)_`)
-    return { ...result, branch: w.branch, commit, merged, seconds }
+    appendLog(`${who(w.role)} · làm việc thật (${w.step})`, `${result.summary} _(${w.branch}${commit ? ` · commit ${commit}` : ''}${merged ? ` · đã merge vào ${p.base}` : ''}${pushed ? ' · đã push GitHub' : ''} · ${seconds}s)_`)
+    tgSend(`🛠 ${who(w.role)} xong (${w.step}): ${result.summary}${merged ? `\n✅ đã merge vào ${p.base}` : ''}${pushed ? ' · đã push GitHub' : ''}`)
+    return { ...result, branch: w.branch, commit, merged, pushed, seconds }
   })
 }
 
@@ -941,15 +1308,220 @@ let nextEventId = 1
 function emit(type: OfficeEvent['type'], role: Role, text = '', group?: string) {
   events.push({ id: nextEventId++, type, role, text, group })
   if (events.length > 200) events.shift()
+  if (type === 'reply' || type === 'error') tgSend(`${group ? `👥 ${group}` : '💬 Riêng'} · ${who(role)}${type === 'error' ? ' ⚠️' : ''}:\n${text}`)
+}
+
+// ---------- Telegram: sếp chat với team qua bot ----------
+
+const TG_FILE = path.join(ROOT, 'office', 'telegram.json')
+interface TgConfig {
+  token?: string
+  /** username của bot (không có @) */
+  bot?: string
+  /** chat Telegram của sếp, có sau khi ghép đôi bằng /start <mã> */
+  chatId?: number
+  owner?: string
+  pairCode?: string
+  /** cuộc chat tin nhắn thường sẽ gửi vào: 'team', 'dm:BE', 'group:<id>' */
+  target?: string
+}
+function loadTg(): TgConfig {
+  try {
+    return JSON.parse(fs.readFileSync(TG_FILE, 'utf8')) as TgConfig
+  } catch {
+    return {}
+  }
+}
+let tg: TgConfig = loadTg()
+let tgPoll: AbortController | null = null
+let tgOffset = 0
+let tgError: string | null = null
+const saveTg = () => fs.writeFileSync(TG_FILE, JSON.stringify(tg, null, 2), { mode: 0o600 })
+const pairCode = () => String(Math.floor(100000 + Math.random() * 900000))
+
+async function tgApi<T = unknown>(method: string, body: Record<string, unknown> = {}, signal?: AbortSignal, token = tg.token): Promise<T> {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  const j = (await r.json().catch(() => ({}))) as { ok?: boolean; result?: T; description?: string }
+  if (!j.ok) throw new Error(j.description ?? `Telegram lỗi ${r.status}`)
+  return j.result as T
+}
+
+function tgReply(chatId: number, text: string) {
+  if (!tg.token) return
+  void tgApi('sendMessage', { chat_id: chatId, text: text.slice(0, 4000) }).catch((e) => console.error('[telegram]', (e as Error).message))
+}
+/** Gửi cho sếp (nếu đã ghép đôi) */
+function tgSend(text: string) {
+  if (tg.chatId) tgReply(tg.chatId, text)
+}
+
+const findRole = (s: string) => toRole(s) ?? ROLES.find((r) => nameOf(r).toLowerCase() === s.toLowerCase())
+function chatName(chat: string) {
+  if (chat === 'team') return 'Cả team'
+  if (chat.startsWith('dm:')) return `riêng với ${who(chat.slice(3))}`
+  return `nhóm ${groupById(chat.slice(6))?.name ?? '(đã xoá)'}`
+}
+function tgHelp() {
+  return [
+    'Nhắn thẳng = gửi vào cuộc chat đang chọn.',
+    '/team [nội dung] — chọn chat Cả team',
+    `/<mã hoặc tên> [nội dung] — chat riêng, vd /BE hoặc /${nameOf('PM')} (mã: ${ROLES.join(', ')})`,
+    '/nhom <tên nhóm> — chọn nhóm chat',
+    '/giao <việc> — giao việc (Cả team = việc chung, chat riêng = việc riêng)',
+    '/ds — danh sách cuộc chat',
+    `Đang chọn: ${chatName(tg.target ?? 'team')}`,
+  ].join('\n')
+}
+
+function tgSendChat(chat: string, raw: string, task = false) {
+  const text = raw.replace(/\s+/g, ' ').trim()
+  if (!text) return
+  if (text.length > 500) return tgSend('Tin dài quá 500 ký tự.')
+  const err = sendChat(chat, text, task)
+  if (err) tgSend(`⚠️ ${err}`)
+  else if (task) tgSend(`📋 Đã giao việc (${chatName(chat)}).`)
+}
+
+function tgHandle(msg: { chat: { id: number; type?: string }; from?: { first_name?: string; username?: string }; text?: string }) {
+  const text = (msg.text ?? '').trim()
+  if (!text) return
+  console.log(`[telegram] ${msg.from?.username ?? msg.from?.first_name ?? msg.chat.id}: ${text.slice(0, 80)}`)
+  if (!tg.chatId) {
+    // ghép đôi: "/start <mã>" (từ link) hoặc gõ thẳng mã 6 số
+    const m = text.match(/^(?:\/start(?:@\w+)?\s+)?(\d{6})$/)
+    if (tg.pairCode && m?.[1] === tg.pairCode) {
+      tg = { ...tg, chatId: msg.chat.id, owner: msg.from?.username ? `@${msg.from.username}` : msg.from?.first_name, pairCode: undefined, target: 'team' }
+      saveTg()
+      appendLog('Hệ thống', `Sếp kết nối Telegram (${tg.owner ?? msg.chat.id})`)
+      tgSend(`✅ Đã kết nối với IT Room. Trả lời của các agent sẽ gửi về đây.\n\n${tgHelp()}`)
+    } else tgReply(msg.chat.id, 'Bot chưa ghép đôi. Mở ⚙️ Cài đặt → ✈️ Telegram trên IT Room, rồi gửi cho bot mã 6 số hiện ở đó.')
+    return
+  }
+  if (msg.chat.id !== tg.chatId) return tgReply(msg.chat.id, 'Bot này chỉ nói chuyện với sếp đã kết nối.')
+
+  const cmd = text.match(/^\/([\p{L}\w]+)(?:@\w+)?\s*([\s\S]*)$/u)
+  if (!cmd) return tgSendChat(tg.target ?? 'team', text)
+  const [, name, rest] = cmd
+  const lower = name.toLowerCase()
+  if (lower === 'start' || lower === 'help') return tgSend(tgHelp())
+  if (lower === 'ds') {
+    const lines = chatList().map((c) => `${c.id === tg.target ? '👉 ' : '• '}${c.kind === 'dm' ? `/${c.members[0]} — ${who(c.members[0])}` : c.kind === 'team' ? '/team — Cả team' : `/nhom ${c.name}`}`)
+    return tgSend(lines.join('\n'))
+  }
+  if (lower === 'giao') {
+    const target = tg.target ?? 'team'
+    if (target.startsWith('group:')) return tgSend('Chỉ giao việc được ở Cả team hoặc chat riêng. Gõ /team hoặc /<mã agent> trước.')
+    if (!rest.trim()) return tgSend('Gõ: /giao <việc cần làm>')
+    return tgSendChat(target, rest, true)
+  }
+  let chat: string | undefined
+  let body = rest
+  if (lower === 'team') chat = 'team'
+  else if (lower === 'nhom') {
+    const q = rest.trim().toLowerCase()
+    const g = groups.find((x) => x.name.toLowerCase() === q) ?? groups.find((x) => q && x.name.toLowerCase().startsWith(q))
+    if (!g) return tgSend(`Không có nhóm "${rest.trim()}". Gõ /ds để xem.`)
+    chat = `group:${g.id}`
+    body = ''
+  } else {
+    const role = findRole(name)
+    if (role) chat = `dm:${role}`
+  }
+  if (!chat) return tgSend(`Không hiểu lệnh /${name}.\n\n${tgHelp()}`)
+  tg.target = chat
+  saveTg()
+  if (body.trim()) tgSendChat(chat, body)
+  else tgSend(`Đã chọn: ${chatName(chat)}. Giờ nhắn thẳng là gửi vào đây.`)
+}
+
+async function tgLoop(ctrl: AbortController) {
+  await tgApi('deleteWebhook', {}, ctrl.signal).catch(() => {})
+  while (!ctrl.signal.aborted) {
+    try {
+      const updates = await tgApi<{ update_id: number; message?: Parameters<typeof tgHandle>[0] }[]>(
+        'getUpdates',
+        { offset: tgOffset, timeout: 30, allowed_updates: ['message'] },
+        ctrl.signal,
+      )
+      tgError = null
+      for (const u of updates) {
+        tgOffset = u.update_id + 1
+        if (u.message) {
+          try {
+            tgHandle(u.message)
+          } catch (e) {
+            console.error('[telegram]', (e as Error).message)
+          }
+        }
+      }
+    } catch (e) {
+      if (ctrl.signal.aborted) return
+      tgError = (e as Error).message
+      console.error('[telegram]', tgError)
+      await new Promise((r) => setTimeout(r, 5000))
+    }
+  }
+}
+function startTg() {
+  tgPoll?.abort()
+  tgPoll = null
+  if (!tg.token) return
+  const c = new AbortController()
+  tgPoll = c
+  void tgLoop(c)
+}
+function tgView() {
+  return {
+    configured: !!tg.token,
+    bot: tg.bot ?? null,
+    connected: !!tg.chatId,
+    owner: tg.owner ?? null,
+    pairLink: tg.bot && tg.pairCode && !tg.chatId ? `https://t.me/${tg.bot}?start=${tg.pairCode}` : null,
+    pairCode: tg.chatId ? null : (tg.pairCode ?? null),
+    target: tg.chatId ? chatName(tg.target ?? 'team') : null,
+    error: tgError,
+  }
+}
+async function setTgToken(token: string) {
+  const me = await tgApi<{ username: string }>('getMe', {}, undefined, token)
+  tg = { token, bot: me.username, pairCode: pairCode(), target: 'team' }
+  tgOffset = 0
+  tgError = null
+  saveTg()
+  startTg()
 }
 
 // ---------- hộp thư office/inbox.md ----------
 
+/** Đoạn dặn agent tự nhận ra tin nhắn là giao việc (PM nhận thành việc chung, người khác nhận việc riêng) */
+function taskHint(role: Role) {
+  const pm = funcOf(role) === 'PM'
+  return (
+    ' Nếu tin này là sếp GIAO VIỆC MỚI (yêu cầu làm / xây / sửa / thêm một thứ cụ thể, kể cả dự án mới) thì ghi tên ngắn của việc (tối đa 6 từ) vào "title" ' +
+    `và trả lời rằng bạn nhận việc, ${pm ? 'sẽ gọi cả team họp phân công ngay' : 'bắt tay làm ngay'}. ` +
+    'Còn nếu sếp chỉ chào hỏi, hỏi tiến độ, hỏi ý kiến hay trò chuyện thì để "title" rỗng và đừng hứa bắt đầu việc gì.'
+  )
+}
+
+/** Agent nhận ra sếp giao việc qua tin nhắn thường: tạo việc như khi bật 📋 Giao việc */
+function assignFromChat(role: Role, message: string, title: string) {
+  if (!title.trim()) return
+  const target = funcOf(role) === 'PM' ? 'team' : role
+  console.log(`[giao việc] ${who(role)} nhận ra tin nhắn của sếp là giao việc → ${target === 'team' ? 'việc chung' : `việc riêng của ${role}`}: ${title}`)
+  assign(target, message)
+}
+
 async function answerBoss(role: Role, message: string) {
   emit('thinking', role)
   try {
-    const { text } = await speak(role, `Sếp vừa nhắn cho bạn: "${message}". Trả lời sếp.`, 'boss', 'boss')
+    const { text, title } = await speak(role, `Sếp vừa nhắn cho bạn: "${message}". Trả lời sếp.${taskHint(role)}`, 'boss', 'boss')
     emit('reply', role, text)
+    assignFromChat(role, message, title)
   } catch (e) {
     const msg = (e as Error).message
     console.error(msg)
@@ -1052,6 +1624,7 @@ function sendChat(chat: string, text: string, task = false): string | null {
   emit('user', members[0], text, name)
   const called = mentioned(text, members)
   const responders = called.length ? called : members
+  const pmJudges = (role: Role) => !g && role === 'PM'
   inChat(chat, async () => {
     // lần lượt để người sau đọc được câu người trước trong nhóm
     for (const role of responders) {
@@ -1062,9 +1635,12 @@ function sendChat(chat: string, text: string, task = false): string | null {
         const situation =
           `Sếp vừa nhắn trong ${title}: "${text}". ` +
           (called.length ? 'Sếp gọi tên bạn. ' : '') +
-          'Trả lời trong nhóm; nếu đồng đội đã nói rồi thì đừng lặp lại, có thể đáp lại ý của họ.'
-        const { text: reply } = await speak(role, situation, channel, 'boss')
+          'Trả lời trong nhóm; nếu đồng đội đã nói rồi thì đừng lặp lại, có thể đáp lại ý của họ.' +
+          // ở kênh Cả team, PM nhận ra tin giao việc và mở việc chung (như bật 📋 Giao việc)
+          (pmJudges(role) ? taskHint(role) : '')
+        const { text: reply, title: taskTitle } = await speak(role, situation, channel, 'boss')
         emit('reply', role, reply, name)
+        if (pmJudges(role)) assignFromChat(role, text, taskTitle)
       } catch (e) {
         const msg = (e as Error).message
         console.error(msg)
@@ -1194,6 +1770,101 @@ async function checkInbox() {
   }
 }
 
+// ---------- đăng nhập Antigravity từ trang cài đặt ----------
+// agy chỉ hỏi mã đăng nhập khi chạy trong terminal thật, nên bọc nó trong một pty (python3) để
+// server đọc được link đăng nhập và ghi mã xác thực vào. Mã chỉ dùng được cho đúng tiến trình đã tạo link.
+
+const PTY_PY = `import os,pty,sys,select
+pid,fd=pty.fork()
+if pid==0: os.execvp(sys.argv[1],sys.argv[1:])
+while True:
+  r,_,_=select.select([fd,0],[],[])
+  if fd in r:
+    try: d=os.read(fd,4096)
+    except OSError: break
+    if not d: break
+    sys.stdout.buffer.write(d); sys.stdout.flush()
+  if 0 in r:
+    d=os.read(0,4096)
+    if d: os.write(fd,d)
+_,st=os.waitpid(pid,0); sys.exit(os.waitstatus_to_exitcode(st))`
+
+type AgyLoginState = 'idle' | 'starting' | 'waiting' | 'verifying' | 'ok' | 'error'
+const agyLogin: { state: AgyLoginState; url?: string; error?: string; startedAt?: number; child?: ReturnType<typeof spawn> } = { state: 'idle' }
+const AGY_LOGIN_TIMEOUT_MS = 60_000 // agy tự huỷ sau 60 giây chờ
+
+/** Đã đăng nhập agy chưa: `agy models` báo lỗi ngay khi chưa đăng nhập */
+function agyLoggedIn(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(AGY_BIN, ['models'], { cwd: AGY_WORKSPACE, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: process.env })
+    const timer = setTimeout(() => child.kill(), 15_000)
+    child.on('error', () => resolve(false))
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve(code === 0)
+    })
+  })
+}
+
+function agyLoginView() {
+  const { state, url, error, startedAt } = agyLogin
+  return { state, url, error, expiresAt: state === 'waiting' && startedAt ? startedAt + AGY_LOGIN_TIMEOUT_MS : undefined }
+}
+
+function stopAgyLogin() {
+  agyLogin.child?.kill()
+  agyLogin.child = undefined
+}
+
+/** Bật agy trong pty, chờ nó in link đăng nhập Google */
+function startAgyLogin(): Promise<void> {
+  stopAgyLogin()
+  fs.mkdirSync(AGY_WORKSPACE, { recursive: true })
+  Object.assign(agyLogin, { state: 'starting', url: undefined, error: undefined, startedAt: Date.now() })
+  const child = spawn('python3', ['-c', PTY_PY, AGY_BIN, '-p', 'Trả lời đúng một chữ: ok', '--sandbox'], {
+    cwd: AGY_WORKSPACE,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: process.env,
+  })
+  agyLogin.child = child
+  let out = ''
+  return new Promise((resolve) => {
+    const onData = (d: Buffer) => {
+      out += d.toString()
+      const url = out.match(/https:\/\/accounts\.google\.com\/\S+/)?.[0]
+      if (url && agyLogin.state === 'starting') {
+        Object.assign(agyLogin, { state: 'waiting', url, startedAt: Date.now() })
+        resolve()
+      }
+    }
+    child.stdout?.on('data', onData)
+    child.stderr?.on('data', onData)
+    child.on('error', (e) => {
+      Object.assign(agyLogin, { state: 'error', error: `Không chạy được agy qua python3: ${e.message}` })
+      resolve()
+    })
+    child.on('close', (code) => {
+      if (agyLogin.child !== child) return resolve() // đã có lượt đăng nhập mới
+      agyLogin.child = undefined
+      if (code === 0) {
+        Object.assign(agyLogin, { state: 'ok', url: undefined, error: undefined })
+        console.log('[agy] đã đăng nhập Antigravity từ trang cài đặt')
+        for (const r of ROLES) {
+          if (!workers.get(r)?.alive) stopWorker(r)
+          prewarmWorker(r)
+        }
+      } else if (agyLogin.state !== 'ok') {
+        const msg = out.match(/(?:Error|error): (.+)/)?.[1]?.trim() ?? `agy thoát mã ${code}`
+        // agy vốn đã đăng nhập thì chạy thẳng, không in link
+        if (/already/i.test(out)) Object.assign(agyLogin, { state: 'ok' })
+        else Object.assign(agyLogin, { state: 'error', url: undefined, error: msg })
+      }
+      resolve()
+    })
+  })
+}
+
 // ---------- HTTP ----------
 
 function send(res: http.ServerResponse, status: number, data: unknown) {
@@ -1222,7 +1893,7 @@ function readJson(req: http.IncomingMessage, limit = 10_000): Promise<Record<str
 // ---------- trang cài đặt: sửa tính cách (agents/<Role>.md) và chuyên môn (agents/<Role>_skills.md) ----------
 
 /** Các khoá phần đầu file tính cách sửa trực tiếp trên trang cài đặt (tên đổi riêng vì phải thay cả trong hồ sơ đồng nghiệp; id cố định) */
-const EDITABLE_META = ['chức_danh', 'sở_thích', 'cli'] as const
+const EDITABLE_META = ['chức_danh', 'sở_thích', 'cli', 'vai_trò', 'màu', 'nhân_vật'] as const
 
 /** Tách file .md thành phần đầu (giữ nguyên thứ tự khoá) và phần thân */
 function splitMd(file: string) {
@@ -1242,8 +1913,9 @@ function agentSettings(role: Role) {
   const file = skillsFile(role)
   return {
     role,
+    core: CORE_ROLES.includes(role),
     name: nameOf(role),
-    meta: Object.fromEntries(EDITABLE_META.map((k) => [k, meta[k] ?? ''])),
+    meta: { ...Object.fromEntries(EDITABLE_META.map((k) => [k, meta[k] ?? ''])), vai_trò: funcOf(role) },
     persona: persona.body,
     /** Nguyên văn agents/<Role>_skills.md, sửa tự do */
     skills: fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim() : '',
@@ -1288,6 +1960,9 @@ function saveAgentSettings(role: Role, body: Record<string, unknown>) {
     if (typeof v !== 'string') continue
     const clean = v.replace(/[\r\n]+/g, ' ').trim().slice(0, 80)
     if (k === 'cli' && !['claude', 'antigravity'].includes(clean)) continue
+    if (k === 'vai_trò' && (CORE_ROLES.includes(role) || !FUNCS.includes(clean as Func))) continue
+    if (k === 'màu' && clean && !/^#[0-9a-f]{6}$/i.test(clean)) continue
+    if (k === 'nhân_vật' && !['nam', 'nữ'].includes(clean)) continue
     meta.set(k, clean)
   }
   const persona = typeof body.persona === 'string' ? body.persona.trim().slice(0, 20_000) : current.body
@@ -1307,6 +1982,71 @@ function saveAgentSettings(role: Role, body: Record<string, unknown>) {
   }
   appendLog('Sếp', `sửa cài đặt tính cách / chuyên môn của ${who(role)}`)
   return agentSettings(role)
+}
+
+/** Mã mới hợp lệ: chữ cái đầu, chỉ chữ và số, không trùng agent / từ khoá; trả về lỗi hoặc null */
+function checkNewRole(role: string) {
+  if (!/^[A-Za-z][A-Za-z0-9]{1,15}$/.test(role)) return 'Mã gồm 2-16 chữ cái / chữ số, bắt đầu bằng chữ cái (vd Designer, BE2)'
+  if (['all', 'team', 'sep', 'boss', 'he', 'nhom'].includes(role.toLowerCase())) return `Mã "${role}" là từ khoá, chọn mã khác`
+  const taken = ROLES.find((r) => r.toLowerCase() === role.toLowerCase())
+  return taken ? `Đã có agent mã ${taken}` : null
+}
+
+/** Thêm agent mới: tạo agents/<Mã>.md và agents/<Mã>_skills.md, giới thiệu với cả team */
+function createAgentFromSettings(body: Record<string, unknown>) {
+  const role = typeof body.role === 'string' ? body.role.trim() : ''
+  if (ROLES.length >= MAX_AGENTS) return { error: `Phòng chỉ đủ chỗ cho ${MAX_AGENTS} người` }
+  const roleErr = checkNewRole(role)
+  if (roleErr) return { error: roleErr }
+  const name = typeof body.name === 'string' ? body.name.replace(/\s+/g, ' ').trim() : ''
+  const nameErr = checkName(role, name)
+  if (nameErr) return { error: nameErr }
+  // ghi khung file rồi dùng chung đường lưu với trang sửa (kiểm tra từng trường)
+  fs.writeFileSync(path.join(AGENTS_DIR, `${role}.md`), `---\nid: ${role}\ntên: ${name}\ntạo_lúc: ${Date.now()}\n---\n\n`)
+  refreshRoles()
+  const saved = saveAgentSettings(role, { ...body, name })
+  if ('error' in saved) {
+    fs.rmSync(path.join(AGENTS_DIR, `${role}.md`), { force: true })
+    refreshRoles()
+    return saved
+  }
+  const title = frontmatter(path.join(AGENTS_DIR, `${role}.md`), 'chức_danh')
+  appendChannel(role, 'team', 'Sếp', `(thông báo) Chào mừng thành viên mới: ${name} (@${role})${title ? `, ${title}` : ''}. Mọi người giúp đỡ ${name} nhé!`)
+  appendLog('Sếp', `thêm agent mới ${who(role)}`)
+  saveSessions()
+  prewarmWorker(role)
+  return agentSettings(role)
+}
+
+/** Xoá agent thêm mới (agent gốc không xoá được): bỏ hồ sơ, session, khỏi các nhóm chat; giữ lịch sử chat */
+function deleteAgentFromSettings(role: Role) {
+  if (CORE_ROLES.includes(role)) return { error: 'Không xoá được agent gốc' }
+  const name = nameOf(role)
+  stopWorker(role)
+  delete sessions[role]
+  delete statuses[role]
+  for (const f of [`${role}.md`, `${role}_skills.md`]) fs.rmSync(path.join(AGENTS_DIR, f), { force: true })
+  let touched = false
+  for (const g of groups) {
+    if (g.members.includes(role)) {
+      g.members = g.members.filter((r) => r !== role)
+      touched = true
+    }
+  }
+  if (touched) saveGroups()
+  refreshRoles()
+  saveSessions()
+  appendChannel(ROLES[0], 'team', 'Sếp', `(thông báo) ${name} (@${role}) đã rời team.`)
+  appendLog('Sếp', `xoá agent ${role} (${name})`)
+  return { ok: true }
+}
+
+/** Danh sách agent cho giao diện (cảnh 3D, chat, cài đặt) */
+function roster() {
+  return ROLES.map((r) => {
+    const file = path.join(AGENTS_DIR, `${r}.md`)
+    return { id: r, core: CORE_ROLES.includes(r), func: funcOf(r), name: nameOf(r), title: frontmatter(file, 'chức_danh'), color: frontmatter(file, 'màu'), hobby: frontmatter(file, 'sở_thích'), body: frontmatter(file, 'nhân_vật') === 'nữ' ? 'nữ' : 'nam' }
+  })
 }
 
 /** Thông tin chi tiết một agent cho bảng "chi tiết" trên giao diện */
@@ -1345,6 +2085,23 @@ const server = http.createServer(async (req, res) => {
   // ---- trang cài đặt ----
   if (req.method === 'GET' && url.pathname === '/api/settings/agents') return send(res, 200, { agents: ROLES.map(agentSettings) })
   if (req.method === 'GET' && url.pathname === '/api/names') return send(res, 200, names())
+  if (req.method === 'GET' && url.pathname === '/api/roster') {
+    refreshRoles() // phòng khi thêm / xoá file agents/*.md bằng tay
+    return send(res, 200, { agents: roster() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/settings/agent/create') {
+    const body = await readJson(req, 100_000)
+    if (!body) return send(res, 400, { error: 'invalid_request' })
+    const created = createAgentFromSettings(body)
+    return send(res, 'error' in created ? 400 : 200, created)
+  }
+  if (req.method === 'POST' && url.pathname === '/api/settings/agent/delete') {
+    const body = await readJson(req)
+    const role = typeof body?.role === 'string' ? toRole(body.role) : undefined
+    if (!role) return send(res, 400, { error: 'Không có agent này' })
+    const r = deleteAgentFromSettings(role)
+    return send(res, 'error' in r ? 400 : 200, r)
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/settings/agent') {
     const body = await readJson(req, 100_000) // tính cách dài tới 20 nghìn ký tự
@@ -1354,10 +2111,79 @@ const server = http.createServer(async (req, res) => {
     return send(res, 'error' in saved ? 400 : 200, saved)
   }
 
+  // ---- đăng nhập Antigravity ----
+  if (req.method === 'GET' && url.pathname === '/api/agy/auth') {
+    const busy = ['starting', 'waiting', 'verifying'].includes(agyLogin.state)
+    return send(res, 200, { loggedIn: busy ? false : await agyLoggedIn(), login: agyLoginView() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/agy/login') {
+    if (await agyLoggedIn()) return send(res, 200, { loggedIn: true, login: agyLoginView() })
+    await Promise.race([startAgyLogin(), new Promise((r) => setTimeout(r, 20_000))])
+    return send(res, 200, { loggedIn: false, login: agyLoginView() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/agy/login/code') {
+    const body = await readJson(req)
+    const code = typeof body?.code === 'string' ? body.code.trim() : ''
+    if (!code || code.length > 2000 || /\s/.test(code)) return send(res, 400, { error: 'Mã không hợp lệ' })
+    if (agyLogin.state !== 'waiting' || !agyLogin.child?.stdin) return send(res, 400, { error: 'Lượt đăng nhập đã hết hạn, bấm lấy link mới' })
+    agyLogin.state = 'verifying'
+    agyLogin.child.stdin.write(`${code}\r`)
+    return send(res, 200, { login: agyLoginView() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/agy/login/cancel') {
+    stopAgyLogin()
+    Object.assign(agyLogin, { state: 'idle', url: undefined, error: undefined })
+    return send(res, 200, { login: agyLoginView() })
+  }
+
   // ---- dự án thật ----
+  if (req.method === 'GET' && url.pathname === '/api/quota') {
+    // số liệu Claude cũ hơn 10 phút (hoặc sếp bấm làm mới): hỏi nhanh một lượt để cập nhật
+    const stale = !claudeQuota || Date.now() - claudeQuota.updatedAt > 10 * 60_000
+    if (url.searchParams.get('refresh') === '1' || (stale && url.searchParams.get('auto') === '1')) await probeClaudeQuota()
+    const agyAgents = ROLES.filter((r) => engineOf(r) === 'agy')
+    const claudeAgents = ROLES.filter((r) => engineOf(r) !== 'agy')
+    return send(res, 200, {
+      claude: claudeQuota && { ...claudeQuota, agents: claudeAgents },
+      agy: { ...agyHealth, agents: agyAgents },
+    })
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/media') return send(res, 200, { files: mediaList() })
+  if (req.method === 'GET' && url.pathname === '/api/media/file') return sendMedia(req, res, url.searchParams.get('path') ?? '')
+
   if (req.method === 'GET' && url.pathname === '/api/project') {
     const p = projectConfig()
     return send(res, 200, p ? { enabled: true, dir: p.dir, base: p.base } : { enabled: false })
+  }
+
+  // ---- GitHub ----
+  if (req.method === 'GET' && url.pathname === '/api/github') return send(res, 200, await githubView())
+  if (req.method === 'POST' && url.pathname === '/api/github/login') {
+    await Promise.race([startGhLogin(), new Promise((r) => setTimeout(r, 20_000))])
+    return send(res, 200, await githubView())
+  }
+  if (req.method === 'POST' && url.pathname === '/api/github/login/cancel') {
+    stopGhLogin()
+    Object.assign(ghLogin, { state: 'idle', code: undefined, url: undefined, error: undefined })
+    return send(res, 200, await githubView())
+  }
+  if (req.method === 'POST' && url.pathname === '/api/github/repo') {
+    const body = await readJson(req)
+    const input = typeof body?.repo === 'string' ? body.repo.slice(0, 200) : ''
+    const r = await connectRepo(input, body?.create === true, body?.private !== false)
+    return 'error' in r ? send(res, 400, r) : send(res, 200, await githubView())
+  }
+  if (req.method === 'POST' && url.pathname === '/api/github/settings') {
+    const body = await readJson(req)
+    if (typeof body?.autoPush === 'boolean') setFrontmatter(PROJECT_FILE, 'auto_push', String(body.autoPush))
+    return send(res, 200, await githubView())
+  }
+  if (req.method === 'POST' && url.pathname === '/api/github/push') {
+    const p = projectConfig()
+    if (!p) return send(res, 400, { error: 'Chưa có dự án' })
+    const r = await pushBase(p)
+    return r.ok ? send(res, 200, await githubView()) : send(res, 400, { error: `Push lỗi: ${r.out.slice(0, 300)}` })
   }
 
   // Khởi tạo dự án mới trong ROOT/projects/<slug> do PM Lan chủ trì
@@ -1376,7 +2202,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/work') {
     const body = await readJson(req)
     const role = typeof body?.role === 'string' ? toRole(body.role) : undefined
-    const step = (['code', 'fix', 'review', 'test', 'personal'] as const).find((s) => s === body?.step)
+    const step = (['code', 'fix', 'review', 'test', 'personal', ...MEDIA_STEPS] as const).find((s) => s === body?.step)
     const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '')
     const branch = str(body?.branch, 60)
     if (!role || !step || !/^task\/[\w-]+$/.test(branch)) return send(res, 400, { error: 'invalid_request' })
@@ -1401,6 +2227,34 @@ const server = http.createServer(async (req, res) => {
     const role = toRole(url.searchParams.get('role') ?? '')
     if (!role) return send(res, 400, { error: 'role không hợp lệ' })
     return send(res, 200, agentDetail(role))
+  }
+
+  // ---- Telegram ----
+  if (req.method === 'GET' && url.pathname === '/api/telegram') return send(res, 200, tgView())
+  if (req.method === 'POST' && url.pathname === '/api/telegram/token') {
+    const body = await readJson(req)
+    const token = typeof body?.token === 'string' ? body.token.trim() : ''
+    if (!/^\d+:[\w-]{30,}$/.test(token)) return send(res, 400, { error: 'Token không đúng dạng (vd 123456789:AA...). Lấy từ @BotFather.' })
+    try {
+      await setTgToken(token)
+    } catch (e) {
+      return send(res, 400, { error: `Telegram từ chối token: ${(e as Error).message}` })
+    }
+    return send(res, 200, tgView())
+  }
+  if (req.method === 'POST' && url.pathname === '/api/telegram/pair') {
+    if (!tg.token) return send(res, 400, { error: 'Chưa có token bot' })
+    tg = { ...tg, chatId: undefined, owner: undefined, pairCode: pairCode() }
+    saveTg()
+    return send(res, 200, tgView())
+  }
+  if (req.method === 'POST' && url.pathname === '/api/telegram/disconnect') {
+    tgPoll?.abort()
+    tgPoll = null
+    tg = {}
+    tgError = null
+    fs.rmSync(TG_FILE, { force: true })
+    return send(res, 200, tgView())
   }
 
   // ---- cửa sổ chat ----
@@ -1529,10 +2383,15 @@ saveSessions()
 // Bật sẵn tiến trình agy chạy liên tục cho các agent dùng Antigravity; tắt hết khi server dừng
 for (const r of ROLES) prewarmWorker(r)
 void ensureProject().then((p) => console.log(p ? `Dự án thật: ${p.dir} (branch chính ${p.base})` : 'Chưa cấu hình dự án (agents/_project.md): chạy mô phỏng'))
-const stopAll = () => workers.forEach((w) => w.stop())
+const stopAll = () => {
+  workers.forEach((w) => w.stop())
+  stopAgyLogin()
+  stopGhLogin()
+}
 process.on('exit', stopAll)
 for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
 setInterval(() => void checkInbox(), 1000)
+startTg()
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`IT Room server: http://127.0.0.1:${PORT}`)
   for (const r of ROLES) {

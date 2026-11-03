@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Role } from './data/agents'
+import type { Floor, Role } from './data/agents'
 
 /** work: ngồi làm việc · hobby: ngồi chơi khi rảnh · listen: ngồi nghe khách · idle: đứng (họp) · sleep: ngủ tại ghế khi hết token */
 export type AnimState = 'work' | 'hobby' | 'listen' | 'walk' | 'talk' | 'idle' | 'sleep'
@@ -61,11 +61,16 @@ interface Store {
   aiStatus: 'unknown' | 'online' | 'offline'
   setAi: (patch: Partial<Pick<Store, 'aiEnabled' | 'aiStatus'>>) => void
   setAgent: (id: Role, patch: Partial<AgentRuntime>) => void
+  /** Tạo trạng thái cho agent mới thêm (nếu chưa có) */
+  ensureAgent: (id: Role) => void
   addTask: (request: string, assignee: Role | 'team') => number
   updateTask: (id: number, patch: Partial<Task>) => void
   pushLog: (who: Speaker, text: string) => void
   select: (id: Role | null) => void
   setSpeed: (speed: number) => void
+  /** Tầng đang xem: 0 = văn phòng dev, 1 = phòng media. Chỉ vẽ tầng đang xem cho nhẹ */
+  floor: Floor
+  setFloor: (floor: Floor) => void
 }
 
 const initialAgent = (): AgentRuntime => ({ state: 'hobby', bubble: null, chat: null, taskId: null })
@@ -85,10 +90,13 @@ export const useStore = create<Store>((set) => ({
   settingsOpen: false,
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   speed: 1,
+  floor: typeof location !== 'undefined' && new URLSearchParams(location.search).get('tang') === '2' ? 1 : 0,
+  setFloor: (floor) => set({ floor }),
   aiEnabled: true,
   aiStatus: 'unknown',
   setAi: (patch) => set(patch),
-  setAgent: (id, patch) => set((s) => ({ agents: { ...s.agents, [id]: { ...s.agents[id], ...patch } } })),
+  setAgent: (id, patch) => set((s) => ({ agents: { ...s.agents, [id]: { ...(s.agents[id] ?? initialAgent()), ...patch } } })),
+  ensureAgent: (id) => set((s) => (s.agents[id] ? s : { agents: { ...s.agents, [id]: initialAgent() } })),
   addTask: (request, assignee) => {
     const id = nextTaskId++
     const title = request.length > 40 ? `${request.slice(0, 38)}…` : request // tên tạm, agent đặt lại sau

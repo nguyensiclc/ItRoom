@@ -266,6 +266,31 @@ export const createGroup = (name: string, members: Role[]) => api<{ id: string }
 export const updateGroup = (id: string, patch: { name?: string; members?: Role[] }) => api<{ id: string }>('/api/groups/update', { id, ...patch })
 export const deleteGroup = (id: string) => api<{ ok: true }>('/api/groups/delete', { id })
 
+// ---------- đăng nhập Antigravity (agy) ----------
+
+export interface AgyAuth {
+  loggedIn?: boolean
+  login: { state: 'idle' | 'starting' | 'waiting' | 'verifying' | 'ok' | 'error'; url?: string; error?: string; expiresAt?: number }
+}
+export const fetchAgyAuth = () => api<AgyAuth>('/api/agy/auth')
+export const startAgyLogin = () => api<AgyAuth>('/api/agy/login', {})
+export const sendAgyCode = (code: string) => api<AgyAuth>('/api/agy/login/code', { code })
+export const cancelAgyLogin = () => api<AgyAuth>('/api/agy/login/cancel', {})
+
+// ---------- GitHub: đăng nhập, nối repo, push ----------
+
+export interface GithubInfo {
+  user: string | null
+  login: { state: 'idle' | 'starting' | 'waiting' | 'ok' | 'error'; code?: string; url?: string; error?: string }
+  project: { dir: string; base: string; remote: string | null; autoPush: boolean } | null
+}
+export const fetchGithub = () => api<GithubInfo>('/api/github')
+export const startGithubLogin = () => api<GithubInfo>('/api/github/login', {})
+export const cancelGithubLogin = () => api<GithubInfo>('/api/github/login/cancel', {})
+export const connectGithubRepo = (repo: string, create: boolean, isPrivate: boolean) => api<GithubInfo>('/api/github/repo', { repo, create, private: isPrivate })
+export const setAutoPush = (autoPush: boolean) => api<GithubInfo>('/api/github/settings', { autoPush })
+export const pushGithub = () => api<GithubInfo>('/api/github/push', {})
+
 // ---------- làm việc thật trên thư mục dự án ----------
 
 let project: { dir: string; base: string } | null = null
@@ -303,7 +328,7 @@ export async function initProjectApi(name: string, description?: string) {
 export interface WorkResult {
   summary: string
   verdict: 'done' | 'pass' | 'fail'
-  area: '' | 'BE' | 'FE'
+  area: '' | 'BE' | 'FE' | 'design' | 'audio' | 'video'
   details: string
   branch: string
   commit: string
@@ -313,7 +338,7 @@ export interface WorkResult {
 
 export interface WorkRequest {
   role: Role
-  step: 'code' | 'fix' | 'review' | 'test' | 'personal'
+  step: 'code' | 'fix' | 'review' | 'test' | 'personal' | 'script' | 'design' | 'audio' | 'edit' | 'mreview' | 'mfix'
   branch: string
   title: string
   request: string
@@ -347,8 +372,10 @@ export async function realWork(w: WorkRequest): Promise<WorkResult | null> {
 
 export interface AgentSettings {
   role: Role
+  /** Agent gốc: giữ khung quy trình việc chung, không xoá được, không đổi vai trò */
+  core?: boolean
   name: string
-  meta: { chức_danh: string; sở_thích: string; cli: string }
+  meta: { chức_danh: string; sở_thích: string; cli: string; vai_trò: string; màu: string; nhân_vật: string }
   /** Phần thân agents/<Role>.md: tính cách, quan hệ đồng nghiệp, vai trò */
   persona: string
   /** Nguyên văn agents/<Role>_skills.md: chuyên môn, công cụ, giới hạn (viết tự do) */
@@ -357,28 +384,23 @@ export interface AgentSettings {
 
 export const fetchAgentSettings = () => api<{ agents: AgentSettings[] }>('/api/settings/agents')
 export const saveAgentSettings = (s: AgentSettings) => api<AgentSettings>('/api/settings/agent', s)
+export const createAgent = (s: AgentSettings) => api<AgentSettings>('/api/settings/agent/create', s)
+export const deleteAgent = (role: Role) => api<{ ok: true }>('/api/settings/agent/delete', { role })
 
-// ---------- tên agent (dòng `tên:` trong agents/<Role>.md, đổi được ở trang cài đặt) ----------
 
-/** Gán tên mới vào danh sách AGENTS dùng chung; báo store để nhãn 3D, chat... vẽ lại */
-export function applyNames(names: Partial<Record<Role, string>>) {
-  let changed = false
-  for (const a of AGENTS) {
-    const n = names[a.id]
-    if (n && n !== a.name) {
-      a.name = n
-      changed = true
-    }
-  }
-  if (changed) useStore.getState().bumpNames()
+// ---------- Telegram ----------
+
+export interface TelegramInfo {
+  configured: boolean
+  bot: string | null
+  connected: boolean
+  owner: string | null
+  pairLink: string | null
+  pairCode: string | null
+  target: string | null
+  error: string | null
 }
-
-/** Lấy tên từ server lúc mở trang và định kỳ (phòng khi sửa tay file .md) */
-export function startNamePolling() {
-  const poll = async () => {
-    const { data } = await api<Record<Role, string>>('/api/names')
-    if (data) applyNames(data)
-    setTimeout(poll, 15_000)
-  }
-  void poll()
-}
+export const fetchTelegram = () => api<TelegramInfo>('/api/telegram')
+export const setTelegramToken = (token: string) => api<TelegramInfo>('/api/telegram/token', { token })
+export const repairTelegram = () => api<TelegramInfo>('/api/telegram/pair', {})
+export const disconnectTelegram = () => api<TelegramInfo>('/api/telegram/disconnect', {})
