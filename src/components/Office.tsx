@@ -6,6 +6,7 @@ import { AGENTS, CUBICLE_FRONT_Z, CUBICLE_WIDTH, DESK_Z, MEDIA_ROOM, MEETING_CEN
 import { useStore } from '../store'
 import { positions, yaws } from '../sim/motion'
 import { mouseOffset, usingMouse } from './StickFigure'
+import { DYNAMIC, useMergeStatic } from './mergeStatic'
 
 type V3 = [number, number, number]
 
@@ -304,7 +305,7 @@ function Screen({ owner, position, side = false }: { owner: AgentDef; position: 
     movie.current.emissive.setHSL((t * 0.07) % 1, 0.7, 0.35 + Math.sin(t * 5) * 0.1)
   })
   return (
-    <group position={position}>
+    <group position={position} userData={DYNAMIC}>
       <mesh>
         <planeGeometry args={[0.55, 0.32]} />
         <meshStandardMaterial map={tex} emissiveMap={tex} emissive="#ffffff" emissiveIntensity={0.9} roughness={0.3} />
@@ -337,7 +338,7 @@ function Chair({ x, z, owner }: { x: number; z: number; owner: AgentDef }) {
     g.rotation.y += d * (1 - Math.exp(-8 * dt))
   })
   return (
-    <group ref={ref} position={[x, 0, z]}>
+    <group ref={ref} position={[x, 0, z]} userData={DYNAMIC}>
       <Soft args={[0.5, 0.08, 0.48]} position={[0, 0.46, 0]} color={color} radius={0.035} roughness={0.9} />
       <Soft args={[0.48, 0.55, 0.07]} position={[0, 0.78, 0.25]} color={color} radius={0.035} roughness={0.9} rotation={[-0.08, 0, 0]} />
       <Box args={[0.04, 0.3, 0.04]} position={[0, 0.55, 0.25]} color="#1f2937" />
@@ -460,7 +461,7 @@ function DeskMouse({ owner, position }: { owner: AgentDef; position: V3 }) {
     m.position.z = MathUtils.lerp(m.position.z, position[2] + dz, 0.2)
   })
   return (
-    <mesh ref={ref} position={position} scale={[0.7, 0.45, 1]} castShadow>
+    <mesh ref={ref} position={position} scale={[0.7, 0.45, 1]} castShadow userData={DYNAMIC}>
       <sphereGeometry args={[0.045, 14, 10]} />
       <meshStandardMaterial color="#f1f5f9" roughness={0.4} />
     </mesh>
@@ -657,7 +658,7 @@ function WallClock({ position }: { position: V3 }) {
     if (hour.current) hour.current.rotation.z = -(((d.getHours() % 12) + d.getMinutes() / 60) / 12) * Math.PI * 2
   })
   return (
-    <group position={position}>
+    <group position={position} userData={DYNAMIC}>
       <Cyl args={[0.24, 0.24, 0.04, 40]} position={[0, 0, 0]} rotation={[Math.PI / 2, 0, 0]} color="#1f2937" />
       <Cyl args={[0.21, 0.21, 0.045, 40]} position={[0, 0, 0.003]} rotation={[Math.PI / 2, 0, 0]} color="#ffffff" />
       <group ref={hour} position={[0, 0, 0.03]}>
@@ -966,7 +967,7 @@ function OnAir({ position }: { position: V3 }) {
     return t
   }, [])
   return (
-    <group position={position}>
+    <group position={position} userData={DYNAMIC}>
       <Soft args={[0.62, 0.22, 0.06]} position={[0, 0, 0]} color="#1f2937" radius={0.02} />
       <mesh position={[0, 0, 0.032]}>
         <planeGeometry args={[0.56, 0.17]} />
@@ -1009,8 +1010,9 @@ function MediaRoom() {
   const cz = (z0 + z1) / 2
   const crew = AGENTS.filter(inMediaRoom)
   const dw = mediaDeskWidth()
+  const root = useMergeStatic()
   return (
-    <group>
+    <group ref={root}>
       {/* sàn thảm tối + lối vào */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, 0.002, cz]} receiveShadow>
         <planeGeometry args={[w, d]} />
@@ -1099,6 +1101,7 @@ function StairDoor({ x, toFloor }: { x: number; toFloor: Floor }) {
   const f = FLOORS[toFloor]
   return (
     <group
+      userData={DYNAMIC}
       onClick={(e) => {
         e.stopPropagation()
         useStore.getState().setFloor(toFloor)
@@ -1135,8 +1138,9 @@ export function Building() {
 export function Office() {
   useStore((s) => s.namesVersion) // danh sách agent đổi thì vẽ lại khoang, bàn, bảng
   const wood = useWoodTexture()
+  const root = useMergeStatic()
   return (
-    <group>
+    <group ref={root}>
       {/* sàn gỗ */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[16, 10]} />

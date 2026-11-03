@@ -7,6 +7,7 @@ import { Settings } from './Settings'
 import { MediaGallery } from './MediaGallery'
 import { FloorSwitch } from './FloorSwitch'
 import { QuotaBadge } from './QuotaBadge'
+import { LoadingBar } from './LoadingBar'
 
 const STAGES: { ids: Stage[]; label: string }[] = [
   { ids: ['todo', 'meeting'], label: 'Cần làm' },
@@ -85,6 +86,7 @@ export function Hud() {
         })}
       </section>
 
+      <LoadingBar />
       {selected && <AgentDetail key={selected} role={selected} />}
       <TeamsChat />
       <Settings />

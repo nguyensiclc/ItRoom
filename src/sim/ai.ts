@@ -386,6 +386,8 @@ export const fetchAgentSettings = () => api<{ agents: AgentSettings[] }>('/api/s
 export const saveAgentSettings = (s: AgentSettings) => api<AgentSettings>('/api/settings/agent', s)
 export const createAgent = (s: AgentSettings) => api<AgentSettings>('/api/settings/agent/create', s)
 export const deleteAgent = (role: Role) => api<{ ok: true }>('/api/settings/agent/delete', { role })
+/** Các file mô hình nhân vật trong public/models */
+export const fetchModels = () => api<{ files: string[]; male: string[] }>('/api/models')
 
 
 // ---------- Telegram ----------

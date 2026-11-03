@@ -24,8 +24,28 @@ function basicAuth(password: string | undefined): Plugin {
   }
 }
 
+// Mô hình nhân vật (~15 MB mỗi file VRoid): mặc định Vite trả `no-cache` nên F5 nào cũng tải lại cả trăm MB.
+// Cho trình duyệt nhớ 7 ngày; thay file cùng tên thì Ctrl+F5 để tải lại.
+function cacheModels(): Plugin {
+  return {
+    name: 'itroom-cache-models',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (/^\/models\/[^?]+\.(vrm|glb|gltf|fbx)(\?|$)/i.test(req.url ?? '')) {
+          if (/\.vrm(\?|$)/i.test(req.url ?? '')) res.setHeader('Content-Type', 'model/gltf-binary')
+          const setHeader = res.setHeader.bind(res)
+          // sirv (phục vụ thư mục public) ghi đè Cache-Control thành no-cache: giữ giá trị của mình
+          res.setHeader = (name, value) => (name.toLowerCase() === 'cache-control' ? res : setHeader(name, value))
+          setHeader('Cache-Control', 'public, max-age=604800')
+        }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [basicAuth(process.env.ITROOM_PASSWORD), react()],
+  plugins: [basicAuth(process.env.ITROOM_PASSWORD), cacheModels(), react()],
   server: {
     // Cho phép truy cập qua Cloudflare Tunnel
     allowedHosts: ['.trycloudflare.com'],

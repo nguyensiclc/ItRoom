@@ -35,8 +35,8 @@ export interface AgentDef {
   seat: [number, number]
   /** Làm gì khi rảnh việc */
   hobby: Hobby
-  /** Nhân vật 3D (dòng `nhân_vật:`) */
-  body?: 'nam' | 'nữ'
+  /** Nhân vật 3D: `nam` / `nữ` hoặc tên file mô hình trong public/models (dòng `nhân_vật:`) */
+  body?: string
 }
 
 export const HOBBIES: Record<Hobby, { emoji: string; label: string; murmurs: string[] }> = {

@@ -27,6 +27,9 @@ body { font-family: system-ui, 'Segoe UI', sans-serif; background: #dbe4ee; colo
 .top { position: absolute; top: 12px; left: 12px; display: flex; align-items: center; gap: 16px; padding: 8px 14px; }
 .top h1 { margin: 0; font-size: 18px; }
 
+.loading-bar { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: 280px; padding: 10px 14px 12px; font-size: 13px; color: #334155; text-align: center; }
+.loading-bar i { display: block; height: 4px; margin-top: 8px; border-radius: 999px; background: #6366f1; transition: width 0.2s; }
+
 .ai { display: flex; align-items: center; gap: 6px; border: 1px solid #cbd5e1; background: #fff; border-radius: 999px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 13px; }
 .ai i { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
 .ai.online i { background: #22c55e; }

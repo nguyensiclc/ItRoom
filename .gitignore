@@ -12,3 +12,6 @@ projects/
 
 office/telegram.json
 *.tsbuildinfo
+
+# mô hình VRoid Hub: nhiều mẫu cấm phân phối lại, chỉ để trên máy (nguồn: public/models/CREDITS.md)
+public/models/*.vrm

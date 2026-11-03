@@ -12,7 +12,8 @@ export interface RosterEntry {
   title?: string
   color?: string
   hobby?: string
-  body?: 'nam' | 'nữ'
+  /** Tên file mô hình trong public/models, server đã chọn sẵn */
+  body?: string
 }
 
 const near = (v: Vector3, seat: [number, number]) => Math.abs(v.x - seat[0]) < 0.05 && Math.abs(v.z - seat[1]) < 0.05

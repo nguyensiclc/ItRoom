@@ -4,7 +4,7 @@ import { useStore } from '../store'
 import { AgyLogin } from './AgyLogin'
 import { GithubSettings } from './GithubSettings'
 import { TelegramSettings } from './TelegramSettings'
-import { createAgent, deleteAgent, fetchAgentSettings, saveAgentSettings, type AgentSettings } from '../sim/ai'
+import { createAgent, deleteAgent, fetchAgentSettings, fetchModels, saveAgentSettings, type AgentSettings } from '../sim/ai'
 import { refreshRoster } from '../sim/roster'
 
 /** Các nhóm cài đặt; nhóm chưa làm hiện mờ để biết trước sẽ có gì */
@@ -28,7 +28,7 @@ function blankAgent(): AgentSettings {
   return {
     role: '',
     name: '',
-    meta: { chức_danh: '', sở_thích: HOBBIES.music.label, cli: 'claude', vai_trò: 'khác', nhân_vật: 'nam', màu: PALETTE.find((c) => !used.has(c)) ?? PALETTE[0] },
+    meta: { chức_danh: '', sở_thích: HOBBIES.music.label, cli: 'claude', vai_trò: 'khác', nhân_vật: 'nữ', màu: PALETTE.find((c) => !used.has(c)) ?? PALETTE[0] },
     persona: 'Bạn là ..., làm ... trong phòng IT.\n\n## Tính cách\n- \n\n## Cách nói chuyện\n- \n\n## Quan hệ đồng nghiệp\n- ',
     skills: '# Chuyên môn\n\n## Kỹ năng\n- \n\n## Công cụ\n- \n',
   }
@@ -50,6 +50,10 @@ function AgentEditor({
   const [draft, setDraft] = useState(saved)
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null)
   const [saving, setSaving] = useState(false)
+  const [models, setModels] = useState<{ files: string[]; male: string[] }>({ files: [], male: [] })
+  useEffect(() => {
+    fetchModels().then((r) => r.data && setModels(r.data))
+  }, [])
   const color = draft.meta.màu || agentById(saved.role).color
   const dirty = creating || !same(draft, saved)
   useEffect(() => onDirty(creating ? !same(draft, saved) : dirty), [creating, draft, saved, dirty, onDirty])
@@ -140,8 +144,14 @@ function AgentEditor({
           <label>
             Nhân vật 3D
             <select value={draft.meta.nhân_vật || 'nam'} onChange={(e) => setMeta('nhân_vật', e.target.value)}>
+              <option value="nữ">Nữ (tự chia mô hình)</option>
               <option value="nam">Nam</option>
-              <option value="nữ">Nữ</option>
+              {models.files.map((f) => (
+                <option key={f} value={f}>
+                  {f.replace(/\.[^.]+$/, '')}
+                  {models.male.includes(f) ? ' (nam)' : ''}
+                </option>
+              ))}
             </select>
           </label>
           <label>

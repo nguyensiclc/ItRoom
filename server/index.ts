@@ -16,6 +16,10 @@ import path from 'node:path'
 const PORT = Number(process.env.PORT ?? 8787)
 const ROOT = path.resolve(import.meta.dirname, '..')
 const AGENTS_DIR = path.join(ROOT, 'agents')
+const MODELS_DIR = path.join(ROOT, 'public', 'models')
+/** Mô hình nhân vật nam; mọi file khác trong public/models là nữ */
+const MALE_MODELS = ['readyplayer.me.glb']
+const DEFAULT_MODEL = { nam: 'readyplayer.me.glb', nữ: 'Michelle.glb' }
 const CHAT_FILE = path.join(ROOT, 'office', 'chat.md')
 const CHANNEL_DIR = path.join(ROOT, 'office', 'chat')
 const INBOX_FILE = path.join(ROOT, 'office', 'inbox.md')
@@ -1962,7 +1966,7 @@ function saveAgentSettings(role: Role, body: Record<string, unknown>) {
     if (k === 'cli' && !['claude', 'antigravity'].includes(clean)) continue
     if (k === 'vai_trò' && (CORE_ROLES.includes(role) || !FUNCS.includes(clean as Func))) continue
     if (k === 'màu' && clean && !/^#[0-9a-f]{6}$/i.test(clean)) continue
-    if (k === 'nhân_vật' && !['nam', 'nữ'].includes(clean)) continue
+    if (k === 'nhân_vật' && !['nam', 'nữ', ...modelFiles()].includes(clean)) continue
     meta.set(k, clean)
   }
   const persona = typeof body.persona === 'string' ? body.persona.trim().slice(0, 20_000) : current.body
@@ -2041,11 +2045,33 @@ function deleteAgentFromSettings(role: Role) {
   return { ok: true }
 }
 
-/** Danh sách agent cho giao diện (cảnh 3D, chat, cài đặt) */
+/** Các file mô hình nhân vật 3D trong public/models (Mixamo: .fbx, VRoid Studio: .vrm, hoặc .glb / .gltf) */
+function modelFiles() {
+  try {
+    return fs.readdirSync(MODELS_DIR).filter((f) => /\.(glb|gltf|fbx|vrm)$/i.test(f)).sort((a, b) => a.localeCompare(b))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Danh sách agent cho giao diện (cảnh 3D, chat, cài đặt).
+ * `nhân_vật:` là tên file mô hình, hoặc `nữ` / `nam`. Với `nữ`, mỗi agent được chia một mô hình nữ khác nhau
+ * (ưu tiên mô hình chưa ai chọn đích danh, mô hình VRoid trước Michelle), hết mô hình thì quay vòng.
+ */
 function roster() {
-  return ROLES.map((r) => {
+  const files = modelFiles()
+  const picks = ROLES.map((r) => frontmatter(path.join(AGENTS_DIR, `${r}.md`), 'nhân_vật') ?? 'nam')
+  const isVrm = (f: string) => (/\.vrm$/i.test(f) ? 0 : 1)
+  const female = files.filter((f) => !MALE_MODELS.includes(f)).sort((a, b) => isVrm(a) - isVrm(b))
+  const free = female.filter((f) => !picks.includes(f))
+  const pool = free.length ? free : female
+  let next = 0
+  return ROLES.map((r, i) => {
     const file = path.join(AGENTS_DIR, `${r}.md`)
-    return { id: r, core: CORE_ROLES.includes(r), func: funcOf(r), name: nameOf(r), title: frontmatter(file, 'chức_danh'), color: frontmatter(file, 'màu'), hobby: frontmatter(file, 'sở_thích'), body: frontmatter(file, 'nhân_vật') === 'nữ' ? 'nữ' : 'nam' }
+    const pick = picks[i]
+    const body = files.includes(pick) ? pick : pick !== 'nữ' ? DEFAULT_MODEL.nam : pool.length ? pool[next++ % pool.length] : DEFAULT_MODEL.nữ
+    return { id: r, core: CORE_ROLES.includes(r), func: funcOf(r), name: nameOf(r), title: frontmatter(file, 'chức_danh'), color: frontmatter(file, 'màu'), hobby: frontmatter(file, 'sở_thích'), body }
   })
 }
 
@@ -2085,6 +2111,7 @@ const server = http.createServer(async (req, res) => {
   // ---- trang cài đặt ----
   if (req.method === 'GET' && url.pathname === '/api/settings/agents') return send(res, 200, { agents: ROLES.map(agentSettings) })
   if (req.method === 'GET' && url.pathname === '/api/names') return send(res, 200, names())
+  if (req.method === 'GET' && url.pathname === '/api/models') return send(res, 200, { files: modelFiles(), male: MALE_MODELS })
   if (req.method === 'GET' && url.pathname === '/api/roster') {
     refreshRoles() // phòng khi thêm / xoá file agents/*.md bằng tay
     return send(res, 200, { agents: roster() })

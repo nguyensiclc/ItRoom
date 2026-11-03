@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { useFrame } from '@react-three/fiber'
-import { useGLTF } from '@react-three/drei'
+import { useFrame, useLoader } from '@react-three/fiber'
+import { useFBX, useGLTF } from '@react-three/drei'
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js'
-import { Color, Group, MathUtils, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3 } from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { VRMLoaderPlugin, type VRM, type VRMHumanBoneName } from '@pixiv/three-vrm'
+import { Color, Group, MathUtils, Mesh, MeshStandardMaterial, Object3D, Quaternion, Skeleton, SkinnedMesh, Vector3, type Material } from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { AnimState } from '../store'
 import { useStore } from '../store'
 import { motions } from '../sim/motion'
@@ -10,18 +13,23 @@ import { DESK_Z, SEAT_Z, type Hobby } from '../data/agents'
 import { mouseOffset, usingMouse } from './StickFigure'
 
 /**
- * Nhân vật người 3D (mô hình mẫu của three.js: nam = avatar Ready Player Me, nữ = Michelle của Mixamo).
+ * Nhân vật người 3D: mọi file trong public/models (mặc định nam = avatar Ready Player Me, nữ = Michelle của Mixamo;
+ * thêm nhân vật tải từ Mixamo dạng .fbx / .glb, hoặc tự tạo trong VRoid Studio dạng .vrm).
  * Không dùng clip hoạt ảnh: mọi tư thế đều tính bằng cách xoay từng đoạn xương về một hướng, nên chạy được
  * với mọi khung xương người kiểu Mixamo. Khi làm việc, tay đặt đúng lên bàn phím / con chuột trên bàn bằng IK hai đoạn.
  */
-export const BODY_MODELS = { nam: '/models/readyplayer.me.glb', nữ: '/models/Michelle.glb' } as const
-export type Body = keyof typeof BODY_MODELS
-for (const url of Object.values(BODY_MODELS)) useGLTF.preload(url)
+const DEFAULT_MODEL = { nam: 'readyplayer.me.glb', nữ: 'Michelle.glb' } as const
+/** Mô hình nam (khớp server); mọi file khác là nữ */
+const MALE_MODELS = ['readyplayer.me.glb']
+/** `nam` / `nữ` (khi chưa có danh sách từ server) hoặc tên file → tên file mô hình */
+const modelFile = (body: string) => (body === 'nam' || body === 'nữ' ? DEFAULT_MODEL[body] : body)
+const modelUrl = (file: string) => `/models/${encodeURIComponent(file)}`
+for (const f of Object.values(DEFAULT_MODEL)) useGLTF.preload(modelUrl(f))
 
 type Mood = 'speak' | 'think' | 'quiet'
 interface Props {
   role: string
-  body: Body
+  body: string
   color: string
   hobby: Hobby
   state: AnimState
@@ -30,6 +38,8 @@ interface Props {
 }
 
 const HIP_SEAT = 0.5 // chiều cao hông khi ngồi ghế (khớp với người que)
+const CHAIR_BACK = 0.24 // mặt trước tựa ghế cách tâm ghế (khớp với Chair trong Office.tsx)
+const CHAIR_THICK = 0.12 // độ dày tựa ghế
 /** Dáng cao ráo: chiều cao đỉnh đầu (m) và độ kéo dài chân */
 const FIGURE = { nam: { height: 1.82, legs: 1.07 }, nữ: { height: 1.72, legs: 1.08 } } as const
 
@@ -118,34 +128,168 @@ function blend(base: Vector3, ...pairs: [number, Vector3 | null][]) {
   return out.addScaledVector(base.normalize(), Math.max(0, rest))
 }
 
-export function RealFigure({ role, body, color, hobby, state, mood = 'quiet', phase }: Props) {
-  const { scene } = useGLTF(BODY_MODELS[body])
+export function RealFigure(props: Props) {
+  const file = modelFile(props.body)
+  if (/\.fbx$/i.test(file)) return <FbxFigure {...props} file={file} />
+  if (/\.vrm$/i.test(file)) return <VrmFigure {...props} file={file} />
+  return <GltfFigure {...props} file={file} />
+}
+
+/** Tên xương kiểu Mixamo → xương chuẩn VRM (VRoid đặt tên J_Bip_...) */
+const VRM_BONES: Record<string, VRMHumanBoneName> = {
+  Hips: 'hips', Spine: 'spine', Spine1: 'chest', Spine2: 'upperChest', Neck: 'neck', Head: 'head',
+  ...Object.fromEntries(
+    SIDES.flatMap((s) => {
+      const l = s === 'Left' ? 'left' : 'right'
+      return [
+        [`${s}UpLeg`, `${l}UpperLeg`], [`${s}Leg`, `${l}LowerLeg`], [`${s}Foot`, `${l}Foot`], [`${s}ToeBase`, `${l}Toes`],
+        [`${s}Arm`, `${l}UpperArm`], [`${s}ForeArm`, `${l}LowerArm`], [`${s}Hand`, `${l}Hand`],
+        ...FINGERS.flatMap((f) =>
+          ['Proximal', 'Intermediate', 'Distal'].map((j, i) => [`${s}Hand${f}${i + 1}`, `${l}${f === 'Pinky' ? 'Little' : f}${j}`]),
+        ),
+      ]
+    }),
+  ),
+}
+/**
+ * VRoid tách tóc / áo thành vài chục lưới cùng vật liệu (~75 lưới, ~14 vật liệu mỗi nhân vật): gộp các lưới cùng vật liệu,
+ * cùng khung xương thành một để giảm lượt vẽ. Lưới có blendshape (mặt) giữ nguyên; lưới gộp bỏ viền MToon (nhìn xa không thấy).
+ */
+function mergeByMaterial(model: Object3D) {
+  const groups = new Map<Material, SkinnedMesh[]>()
+  model.traverse((o) => {
+    const m = o as SkinnedMesh
+    if (!m.isSkinnedMesh || m.morphTargetInfluences) return
+    const mat = Array.isArray(m.material) ? m.material[0] : m.material
+    groups.set(mat, [...(groups.get(mat) ?? []), m])
+  })
+  for (const [mat, meshes] of groups) {
+    const [first] = meshes
+    if (meshes.length < 2 || !first.parent) continue
+    const fits = (m: SkinnedMesh) =>
+      m.skeleton === first.skeleton && m.parent === first.parent && m.bindMatrix.equals(first.bindMatrix) && m.matrix.equals(first.matrix)
+    if (!meshes.every(fits)) continue
+    const geometry = mergeGeometries(
+      meshes.map((m) => {
+        const g = m.geometry.clone()
+        g.clearGroups()
+        return g
+      }),
+    )
+    if (!geometry) continue
+    const merged = new SkinnedMesh(geometry, mat)
+    merged.name = first.name
+    merged.position.copy(first.position)
+    merged.quaternion.copy(first.quaternion)
+    merged.scale.copy(first.scale)
+    merged.bind(first.skeleton, first.bindMatrix)
+    first.parent.add(merged)
+    for (const m of meshes) m.removeFromParent()
+  }
+}
+
+/** Mô hình VRoid Studio (.vrm): tô bóng kiểu anime, xương được đổi tên sang kiểu Mixamo để dùng chung code tư thế */
+function VrmFigure(props: Props & { file: string }) {
+  const gltf = useLoader(GLTFLoader, modelUrl(props.file), (l) => l.register((p) => new VRMLoaderPlugin(p)))
+  const vrm = gltf.userData.vrm as VRM
+  const rename = useMemo(() => {
+    const names: Record<string, string> = {}
+    for (const [mixamo, bone] of Object.entries(VRM_BONES)) {
+      const node = vrm.humanoid.getRawBoneNode(bone) ?? (bone === 'upperChest' ? vrm.humanoid.getRawBoneNode('chest') : null)
+      if (node) names[mixamo] = node.name
+    }
+    return names
+  }, [vrm])
+  return <Figure {...props} scene={vrm.scene} rename={rename} flip={vrm.meta.metaVersion === '0'} />
+}
+function GltfFigure(props: Props & { file: string }) {
+  const { scene } = useGLTF(modelUrl(props.file))
+  return <Figure {...props} scene={scene} />
+}
+/** File tải thẳng từ Mixamo (FBX Binary, With Skin) */
+function FbxFigure(props: Props & { file: string }) {
+  const scene = useFBX(modelUrl(props.file))
+  return <Figure {...props} scene={scene} />
+}
+
+/**
+ * `flip`: mô hình quay mặt về -Z (VRM 0.x). Không xoay gốc mô hình vì code tư thế coi +Z của gốc là phía trước
+ * (xoay gốc thì tay chân bị tính ngược 180°: chân gập ra sau ghế, đồ cầm tay nằm sau lưng); bọc thêm một lớp rồi xoay lớp trong
+ */
+function Figure({ role, file, scene, rename, flip, color, hobby, state, mood = 'quiet', phase }: Props & { file: string; scene: Object3D; rename?: Record<string, string>; flip?: boolean }) {
+  const male = MALE_MODELS.includes(file)
   const offset = useRef<Group>(null)
   const props = { read: useRef<Group>(null), game: useRef<Group>(null), rubik: useRef<Group>(null), movie: useRef<Group>(null), phones: useRef<Group>(null) }
 
   const rig = useMemo(() => {
-    const model = clone(scene)
-    const find = (n: string) => model.getObjectByName(`mixamorig${n}`) ?? model.getObjectByName(`mixamorig:${n}`) ?? model.getObjectByName(n)
+    const inner = clone(scene)
+    const model = flip ? new Group() : inner
+    if (flip) {
+      inner.rotation.y = Math.PI
+      model.add(inner)
+    }
+    const find = (n: string) =>
+      rename ? (rename[n] ? model.getObjectByName(rename[n]) : undefined)
+      : model.getObjectByName(`mixamorig${n}`) ?? model.getObjectByName(`mixamorig:${n}`) ?? model.getObjectByName(n)
     const bones = {} as Record<BoneName, Object3D>
     for (const n of BONES) bones[n] = find(n)!
     // ngón tay: [đốt 1, đốt 2, đốt 3, đầu ngón] cho từng bên
     const fingers = Object.fromEntries(
       SIDES.map((s) => [s, FINGERS.map((f) => [1, 2, 3, 4].map((i) => find(`${s}Hand${f}${i}`)))]),
     ) as Record<(typeof SIDES)[number], (Object3D | undefined)[][]>
-    const all = [...BONES.map((n) => bones[n]), ...Object.values(fingers).flat(2)].filter((b): b is Object3D => !!b)
+    // váy VRoid (chuỗi xương J_Sec_*Skirt* gắn vào hông và đùi): khi ngồi vẫn rủ thẳng xuống, xuyên qua đệm ghế.
+    // Mỗi chuỗi lấy đoạn đầu tiên có độ dài thật (VRoid hay để hai xương đầu trùng nhau) để kéo theo hướng đùi
+    const skirts = (rename ? [bones.Hips, bones.LeftUpLeg, bones.RightUpLeg] : [])
+      .flatMap((p) => p.children.filter((c) => /skirt/i.test(c.name)))
+      .map((root) => {
+        let bone: Object3D = root
+        while (bone.children[0] && bone.children[0].position.lengthSq() < 1e-6) bone = bone.children[0]
+        return { bone, tip: bone.children[0] as Object3D | undefined, side: /_L_/.test(root.name) ? ('Left' as const) : ('Right' as const) }
+      })
+      .filter((k): k is { bone: Object3D; tip: Object3D; side: 'Left' | 'Right' } => !!k.tip)
+    // three-vrm tắt matrixAutoUpdate trên xương lò xo (J_Sec_*) để tự đặt ma trận; mình xoay bằng quaternion nên bật lại
+    for (const k of skirts) k.bone.traverse((b) => (b.matrixAutoUpdate = true))
+    const toes = { Left: find('LeftToeBase'), Right: find('RightToeBase') }
+    const all = [...BONES.map((n) => bones[n]), ...Object.values(fingers).flat(2), ...skirts.map((k) => k.bone), toes.Left, toes.Right].filter((b): b is Object3D => !!b)
     const rest = new Map(all.map((b) => [b, b.quaternion.clone()]))
     const mouths: Mesh[] = []
+    // clone() cho mỗi lưới một skeleton riêng; mô hình VRoid có vài chục lưới cùng một skin (142 xương),
+    // nên gộp lại để mỗi khung hình chỉ tính ma trận xương một lần cho cả nhân vật
+    const skeletons: Skeleton[] = []
+    model.traverse((o) => {
+      const m = o as SkinnedMesh
+      if (!m.isSkinnedMesh) return
+      const s = m.skeleton
+      const same = skeletons.find(
+        (k) => k.bones.length === s.bones.length && k.bones.every((b, i) => b === s.bones[i] && k.boneInverses[i].equals(s.boneInverses[i])),
+      )
+      if (same) m.bind(same, m.bindMatrix)
+      else skeletons.push(s)
+    })
+    if (rename) mergeByMaterial(model)
+    // VRoid: chỉ lưới lớn nhất (thân) đổ bóng; vài chục lưới tóc / phụ kiện mà đổ bóng thì gấp đôi lượt vẽ
+    let body: Mesh | undefined
+    if (rename)
+      model.traverse((o) => {
+        const m = o as Mesh
+        if (m.isMesh && (!body || m.geometry.attributes.position.count > body.geometry.attributes.position.count)) body = m
+      })
     model.traverse((o) => {
       const m = o as Mesh
       if (!m.isMesh) return
-      m.castShadow = true
+      m.castShadow = !body || m === body
       m.frustumCulled = false // xương di chuyển ra ngoài khung bao gốc
-      m.material = (m.material as MeshStandardMaterial).clone()
-      if (m.morphTargetDictionary?.mouthOpen !== undefined) mouths.push(m)
+      // không raycast lưới có xương (phải biến đổi từng đỉnh theo xương: ~100 ms mỗi lần rê chuột khi zoom gần);
+      // bấm chọn agent đã có khối vô hình trong Agent lo
+      m.raycast = () => {}
+      // mô hình FBX có thể gắn nhiều vật liệu cho một lưới
+      m.material = Array.isArray(m.material) ? m.material.map((x) => x.clone()) : m.material.clone()
+      const d = m.morphTargetDictionary
+      if (d && (d.mouthOpen !== undefined || d.Fcl_MTH_A !== undefined)) mouths.push(m) // Fcl_*: blendshape mặt của VRoid
     })
     const pos = (b: Object3D) => b.getWorldPosition(new Vector3())
     // chân dài hơn một chút (bàn chân giữ nguyên cỡ), rồi phóng cả người lên đúng chiều cao
-    const fig = FIGURE[body]
+    const fig = FIGURE[male ? 'nam' : 'nữ']
     for (const sd of SIDES) {
       bones[`${sd}UpLeg`].scale.setScalar(fig.legs)
       bones[`${sd}Foot`].scale.setScalar(1 / fig.legs)
@@ -155,16 +299,43 @@ export function RealFigure({ role, body, color, hobby, state, mood = 'quiet', ph
     model.scale.setScalar(fig.height / (pos(top).y + (top === bones.Head ? 0.12 : 0.02)))
     model.updateMatrixWorld(true)
     const hipStand = pos(bones.Hips).y
+    // lưng / mông lồi ra sau xương hông bao nhiêu (đo ở tư thế đứng, từ hông tới ngực, bỏ tay), tóc rủ sau lưng xa bao nhiêu:
+    // mỗi mô hình một khác (áo hoodie, dáng người, tóc dài), dùng để ngồi vừa chạm lưng ghế
+    const hips = pos(bones.Hips)
+    let back = hips.z
+    let hairBack = hips.z
+    let sole = Infinity // đế giày (chân đã kéo dài nên thấp hơn gốc mô hình)
+    const v = new Vector3()
+    model.traverse((o) => {
+      const m = o as Mesh
+      if (!m.isMesh) return
+      const hair = [m.material].flat().some((x) => /hair/i.test(x.name))
+      const n = m.geometry.attributes.position.count
+      for (let i = 0; i < n; i += 3) {
+        ;(m as SkinnedMesh).isSkinnedMesh ? (m as SkinnedMesh).getVertexPosition(i, v) : v.fromBufferAttribute(m.geometry.attributes.position, i)
+        v.applyMatrix4(m.matrixWorld)
+        sole = Math.min(sole, v.y)
+        if (v.y < hipStand - 0.05 || Math.abs(v.x - hips.x) > 0.2) continue
+        if (hair && v.y < hipStand + 0.55) hairBack = Math.min(hairBack, v.z)
+        else if (!hair && v.y < hipStand + 0.35) back = Math.min(back, v.z)
+      }
+    })
+    // tâm hông khi ngồi (toạ độ của agent, +Z = về phía bàn): lưng vừa chạm tựa ghế, nhưng tóc dài rủ sau lưng
+    // không được thò ra sau mặt lưng tựa ghế (tóc cứng theo đầu, không uốn được) thì nhích lên; không đo được thì dùng số cũ
+    const seatZ =
+      hips.z - back > 0.03 ? Math.max(-CHAIR_BACK + (hips.z - back), -CHAIR_BACK - CHAIR_THICK + 0.06 + (hips.z - hairBack)) - hips.z : -0.09
     const shinLen = pos(bones.LeftLeg).distanceTo(pos(bones.LeftFoot))
-    const ankle = pos(bones.LeftFoot).y // cổ chân cao bao nhiêu khi đứng
+    // đứng thì nâng người lên cho đế giày chạm sàn; cổ chân cao bao nhiêu tính từ đế giày
+    const lift = Number.isFinite(sole) ? -sole : 0
+    const ankle = pos(bones.LeftFoot).y + lift
     const arm = (s: 'Left' | 'Right') => ({
       upper: pos(bones[`${s}Arm`]).distanceTo(pos(bones[`${s}ForeArm`])),
       fore: pos(bones[`${s}ForeArm`]).distanceTo(pos(bones[`${s}Hand`])),
     })
     // xoay của đầu so với nhân vật ở tư thế nghỉ: để đồ đội đầu (tai nghe) bám theo đầu đúng hướng
     const headCorr = bones.Head.getWorldQuaternion(new Quaternion()).invert().multiply(model.getWorldQuaternion(new Quaternion()))
-    return { model, bones, fingers, rest, mouths, hipStand, shinLen, ankle, headCorr, arms: { Left: arm('Left'), Right: arm('Right') } }
-  }, [scene, body])
+    return { model, bones, fingers, skirts, toes, rest, mouths, hipStand, lift, seatZ, shinLen, ankle, headCorr, arms: { Left: arm('Left'), Right: arm('Right') } }
+  }, [scene, male, flip])
 
   // áo mang màu của agent (pha với trắng để giữ vân vải)
   useEffect(() => {
@@ -194,14 +365,14 @@ export function RealFigure({ role, body, color, hobby, state, mood = 'quiet', ph
     const mousing = usingMouse(t)
     to('mouse', mousing, 1 - Math.exp(-10 * dt)) // tay phải chuyển nhanh giữa bàn phím và chuột
 
-    const { model, bones: B, fingers, rest, mouths, hipStand, shinLen, ankle, arms, headCorr } = rig
+    const { model, bones: B, fingers, skirts, toes, rest, mouths, hipStand, lift, seatZ, shinLen, ankle, arms, headCorr } = rig
     const g = offset.current
     const step = t * 8 * Math.min(2, useStore.getState().speed)
     const s = Math.sin(step)
     if (g) {
       // hạ người xuống ghế, nhích vào bàn khi làm việc / ngủ gục; nhún nhẹ khi bước
-      g.position.y = -(hipStand - HIP_SEAT) * W.sit - 0.06 * W.sleep + Math.abs(Math.cos(step)) * 0.03 * W.walk
-      g.position.z = -0.09 * W.sit + 0.16 * W.work + 0.2 * W.sleep // ngồi sát lưng ghế; làm việc / ngủ thì nhích vào bàn
+      g.position.y = -(hipStand - HIP_SEAT) * W.sit + lift * (1 - W.sit) - 0.06 * W.sleep + Math.abs(Math.cos(step)) * 0.03 * W.walk
+      g.position.z = seatZ * W.sit + 0.16 * W.work + 0.2 * W.sleep // ngồi sát lưng ghế; làm việc / ngủ thì nhích vào bàn
     }
 
     for (const [b, q] of rest) b.quaternion.copy(q)
@@ -240,17 +411,30 @@ export function RealFigure({ role, body, color, hobby, state, mood = 'quiet', ph
     )
 
     // ---- chân: đứng thẳng, bước đi, hoặc ngồi (đùi ngang, cẳng chân thả xuống) ----
-    // ngồi: cẳng chân thu chéo về phía ghế vừa đủ để bàn chân chạm sàn (chân dài không lún sàn, không thò xa ra trước)
-    const sitDrop = Math.min(0.995, (HIP_SEAT - ankle) / shinLen)
-    const sitShin = Math.sqrt(1 - sitDrop * sitDrop)
-    const leg = (side: 1 | -1, up: Object3D, low: Object3D, foot: Object3D) => {
+    const leg = (side: 1 | -1, up: Object3D, low: Object3D, foot: Object3D, toe?: Object3D) => {
       const a = 0.45 * s * side // đùi đung đưa ngược pha hai bên
       const bend = Math.max(0, -Math.cos(step) * side) * 0.9 // gập gối khi chân đang đưa ra sau / nhấc lên
       aim(model, up, low, blend(v(0.06 * side, -1, 0), [W.walk, v(0.06 * side, -Math.cos(a), Math.sin(a))], [W.sit, v(0.12 * side, -0.05, 1)]))
+      // ngồi: cẳng chân thu chéo về phía ghế vừa đủ để bàn chân chạm sàn, tính từ độ cao thật của đầu gối
+      // (khớp đùi mỗi mô hình thấp hơn hông một khác: tính theo hông thì chân dài bị lún sàn)
+      const knee = low.getWorldPosition(_a).y
+      const sitDrop = MathUtils.clamp((knee - ankle) / shinLen, 0.3, 0.995)
+      const sitShin = Math.sqrt(1 - sitDrop * sitDrop)
       aim(model, low, foot, blend(v(0.01 * side, -1, 0), [W.walk, v(0, -Math.cos(a - bend), Math.sin(a - bend))], [W.sit, v(0.02 * side, -sitDrop, -sitShin)]))
+      // ngồi: bàn chân đặt phẳng (không thì theo cẳng chân chéo, mũi chân cắm xuống sàn)
+      if (toe && W.sit > 0.01) {
+        const cur = toe.getWorldPosition(new Vector3()).sub(foot.getWorldPosition(_b)).normalize()
+        aimWorld(foot, toe, cur.lerp(v(0.05 * side, -0.2, 1).applyQuaternion(model.getWorldQuaternion(_rq)).normalize(), W.sit))
+      }
     }
-    leg(1, B.LeftUpLeg, B.LeftLeg, B.LeftFoot)
-    leg(-1, B.RightUpLeg, B.RightLeg, B.RightFoot)
+    leg(1, B.LeftUpLeg, B.LeftLeg, B.LeftFoot, toes.Left)
+    leg(-1, B.RightUpLeg, B.RightLeg, B.RightFoot, toes.Right)
+    // ngồi: kéo dải váy hai bên theo hướng đùi
+    for (const { bone, tip, side } of skirts) {
+      const at = (o: Object3D) => o.getWorldPosition(new Vector3())
+      const thigh = at(B[`${side}Leg`]).sub(at(B[`${side}UpLeg`])).normalize()
+      aimWorld(bone, tip, at(tip).sub(at(bone)).normalize().lerp(thigh, 0.8 * W.sit))
+    }
 
     // ---- IK khi làm việc: cổ tay đặt lên bàn phím, tay phải sang chuột ----
     type Dirs = Record<'Left' | 'Right', { upper: Vector3; fore: Vector3 } | null>
@@ -485,7 +669,7 @@ export function RealFigure({ role, body, color, hobby, state, mood = 'quiet', ph
       if (hobby === 'movie' && props.movie.current) props.movie.current.position.copy(toLocal(bucket))
       const ph = props.phones.current
       if (ph) {
-        ph.visible = shown && hobby === 'music' && body === 'nam' // nhân vật nữ có sẵn tai nghe trên mô hình
+        ph.visible = shown && hobby === 'music' && file !== DEFAULT_MODEL.nữ // Michelle có sẵn tai nghe trên mô hình
         if (ph.visible) {
           const q = B.Head.getWorldQuaternion(new Quaternion()).multiply(headCorr)
           const center = pos(B.Head).add(v(0, 0.1, 0.01).applyQuaternion(q))
@@ -498,10 +682,14 @@ export function RealFigure({ role, body, color, hobby, state, mood = 'quiet', ph
 
     // ---- miệng mấp máy khi nói (avatar có blendshape) ----
     const open = W.speak * Math.max(0, Math.sin(t * 13) * 0.5 + Math.sin(t * 7.3) * 0.3)
+    const blink = W.sleep > 0.5 ? 1 : Math.max(0, Math.sin(t * 1.7) * Math.sin(t * 0.53)) ** 30 // chớp mắt, ngủ thì nhắm hẳn
     for (const m of mouths) {
       const d = m.morphTargetDictionary!
-      m.morphTargetInfluences![d.mouthOpen] = open * 0.7
-      if (d.mouthSmile !== undefined) m.morphTargetInfluences![d.mouthSmile] = 0.25
+      const inf = m.morphTargetInfluences!
+      inf[d.mouthOpen ?? d.Fcl_MTH_A] = open * 0.7
+      const smile = d.mouthSmile ?? d.Fcl_MTH_Joy
+      if (smile !== undefined) inf[smile] = 0.25
+      if (d.Fcl_EYE_Close !== undefined) inf[d.Fcl_EYE_Close] = blink
     }
   })
 

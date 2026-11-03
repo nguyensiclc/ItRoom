@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Vector3 } from 'three'
 import type { OrbitControls as OrbitImpl } from 'three-stdlib'
-import { Environment, Lightformer, OrbitControls } from '@react-three/drei'
+import { Environment, Lightformer, OrbitControls, Stats } from '@react-three/drei'
 import { AGENTS, floorAt, type Floor } from './data/agents'
 import { positions } from './sim/motion'
 import { useStore } from './store'
@@ -10,6 +10,9 @@ import { startWorkflow } from './sim/workflow'
 import { Building } from './components/Office'
 import { Agent } from './components/Agent'
 import { Hud } from './components/Hud'
+
+/** Mở với ?fps để hiện bảng FPS / ms mỗi khung hình ở góc trên trái */
+const SHOW_FPS = new URLSearchParams(location.search).has('fps')
 
 export default function App() {
   useStore((s) => s.namesVersion) // thêm / xoá agent ở trang cài đặt
@@ -29,7 +32,10 @@ export default function App() {
 
   return (
     <>
-      <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 8, 11.5], fov: 45 }} onPointerMissed={() => useStore.getState().select(null)}>
+      {/* dpr tối đa 1.25: màn hình scale 150–200% mà vẽ đủ độ phân giải thì gấp 2–4 lần số điểm ảnh */}
+      <Canvas shadows dpr={[1, 1.25]} camera={{ position: [0, 8, 11.5], fov: 45 }} onPointerMissed={() => useStore.getState().select(null)}>
+        <ShadowThrottle every={3} />
+        {SHOW_FPS && <Stats />}
         <color attach="background" args={['#e6e1d8']} />
         <fog attach="fog" args={['#e6e1d8', 20, 36]} />
         <hemisphereLight args={['#fffaf0', '#b8a58c', 0.55]} />
@@ -62,6 +68,26 @@ export default function App() {
       <Hud />
     </>
   )
+}
+
+/**
+ * Phòng gần như đứng yên, nhân vật cử động chậm: vẽ lại bản đồ bóng mỗi `every` khung hình thay vì mọi khung
+ * (lượt vẽ bóng tốn ngang lượt vẽ cả cảnh)
+ */
+function ShadowThrottle({ every }: { every: number }) {
+  const gl = useThree((s) => s.gl)
+  const n = useRef(0)
+  useEffect(() => {
+    gl.shadowMap.autoUpdate = false
+    gl.shadowMap.needsUpdate = true
+    return () => {
+      gl.shadowMap.autoUpdate = true
+    }
+  }, [gl])
+  useFrame(() => {
+    if (n.current++ % every === 0) gl.shadowMap.needsUpdate = true
+  })
+  return null
 }
 
 /** Góc nhìn mặc định từng tầng: [vị trí camera, điểm nhìn] */

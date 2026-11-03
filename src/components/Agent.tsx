@@ -109,10 +109,10 @@ export function Agent({ def, index }: { def: AgentDef; index: number }) {
           <StickFigure role={def.id} look={def.func} color={def.color} hobby={def.hobby} state={runtime.state} mood={mood} phase={index * 1.37} />
         )
         if (!REAL_FIGURES) return stick
-        // đang tải mô hình thì tạm hiện người que
+        // đang tải mô hình thì để trống (HUD hiện thanh tải); tải lỗi mới quay về người que
         return (
           <FigureBoundary fallback={stick}>
-            <Suspense fallback={stick}>
+            <Suspense fallback={null}>
               <RealFigure role={def.id} body={def.body ?? 'nam'} color={def.color} hobby={def.hobby} state={runtime.state} mood={mood} phase={index * 1.37} />
             </Suspense>
           </FigureBoundary>
