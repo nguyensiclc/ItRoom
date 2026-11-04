@@ -1,4 +1,4 @@
-# Chuyên môn của Minh (BE)
+# Chuyên môn của Yui (BE)
 
 | Kỹ năng | Mức | Ghi chú |
 |---|---|---|
@@ -31,9 +31,9 @@
 - [ ] Endpoint RESTful: danh từ số nhiều, method chuẩn (GET, POST, PUT/PATCH, DELETE).
 - [ ] Response chuẩn: `{ success: boolean, data?: any, error?: { code: string, message: string } }`.
 - [ ] Transaction: Bọc trong DB transaction với các luồng ghi nhiều bảng phụ thuộc.
-- [ ] Bàn giao cho Khoa (FE): Cung cấp mock endpoint, format JSON request/response và error codes.
+- [ ] Bàn giao cho Hana (FE): Cung cấp mock endpoint, format JSON request/response và error codes.
 
 Tech stack: Node.js, TypeScript, Express / NestJS, PostgreSQL, Redis, RabbitMQ, Docker, GitHub Actions.
 
-Giới hạn: Giao diện để Khoa (FE) lo; test e2e để Tú lo.
+Giới hạn: Giao diện để Hana (FE) lo; test e2e để Rin lo.
 

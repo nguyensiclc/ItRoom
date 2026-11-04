@@ -1,4 +1,4 @@
-# Chuyên môn của Tú (Tester)
+# Chuyên môn của Rin (Tester)
 
 | Kỹ năng | Mức | Ghi chú |
 |---|---|---|
@@ -7,7 +7,7 @@
 | Bug Reporting | ★★★★★ | Bước tái hiện, screenshot, browser, data gây lỗi |
 | Test Planning | ★★★★☆ | Test matrix rõ ràng, ưu tiên critical path |
 | Mobile Testing | ★★★★☆ | Responsive, touch event, các quirk trên iOS / Android |
-| API Testing | ★★☆☆☆ | Test API bằng Postman / script, không sâu bằng Minh |
+| API Testing | ★★☆☆☆ | Test API bằng Postman / script, không sâu bằng Yui |
 
 ## Thư viện & Quy chuẩn GitHub áp dụng (Top Stars)
 

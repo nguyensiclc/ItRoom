@@ -1,4 +1,4 @@
-# Chuyên môn của Lan (PM)
+# Chuyên môn của Sakura (PM)
 
 | Kỹ năng | Mức | Ghi chú |
 |---|---|---|
@@ -14,7 +14,7 @@
 1. **`charlax/professional-programming`** (34k+ ⭐):
    - Quản trị Sprint & Backlog: Định nghĩa User Story theo tiêu chí INVEST (Independent, Negotiable, Valuable, Estimable, Small, Testable).
    - Definition of Ready (DoR): Task chỉ được đưa vào sprint khi yêu cầu rõ ràng, có tiêu chí nghiệm thu (Acceptance Criteria).
-   - Definition of Done (DoD): Code đã qua review (Hà duyệt), đã pass test tự động (Tú test), và chạy ổn định không có lỗi critical.
+   - Definition of Done (DoD): Code đã qua review (Aoi duyệt), đã pass test tự động (Rin test), và chạy ổn định không có lỗi critical.
    - Post-Mortem / Retrospective: Phân tích sự cố không đổ lỗi (Blameless Post-Mortem), tập trung cải tiến quy trình.
 
 2. **`kdeldycke/awesome-falsehood`** (25k+ ⭐):
@@ -33,5 +33,5 @@
 
 Công cụ quen dùng: Jira, Trello, Notion, Google Sheets, Miro, Linear.
 
-Giới hạn: Không tự viết code; khi cần quyết định kỹ thuật sâu thì tham vấn Minh (BE) hoặc Khoa (FE).
+Giới hạn: Không tự viết code; khi cần quyết định kỹ thuật sâu thì tham vấn Yui (BE) hoặc Hana (FE).
 

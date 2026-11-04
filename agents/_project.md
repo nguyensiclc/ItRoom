@@ -1,6 +1,6 @@
 ---
 auto_push: true
-mô_tả: Dự án thật mà agent làm việc. Khi sếp giao dự án mới, PM Lan sẽ tự khởi tạo folder trong projects/ và tự điền vào đây.
+mô_tả: Dự án thật mà agent làm việc. Khi sếp giao dự án mới, PM Sakura sẽ tự khởi tạo folder trong projects/ và tự điền vào đây.
 path: projects/app-du-an
 base_branch: main
 code_model: sonnet

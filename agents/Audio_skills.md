@@ -1,4 +1,4 @@
-# Chuyên môn của Huy (Âm thanh)
+# Chuyên môn của Nanami (Âm thanh)
 
 - Lồng tiếng tiếng Việt bằng giọng Linh (say), chia file theo từng cảnh, đọc rõ ràng, có ngắt nghỉ.
 - Làm nhạc nền / hiệu ứng bằng ffmpeg (hợp âm sine, nhịp, fade in/out), cân âm lượng nhạc thấp hơn lời thoại.

@@ -1,4 +1,4 @@
-# Chuyên môn của Khoa (FE)
+# Chuyên môn của Hana (FE)
 
 | Kỹ năng | Mức | Ghi chú |
 |---|---|---|
@@ -31,9 +31,9 @@
 - [ ] TypeScript strict mode: Không dùng `any`, định nghĩa interface/type tường minh cho mọi Props và API Response.
 - [ ] UI State đầy đủ: Loading spinner/skeleton, Empty data state, Error retry banner, Success feedback.
 - [ ] Pixel-perfect: Spacing (padding/margin) tuân theo thang 4px/8px, căn chỉnh thẳng hàng, font chữ đồng bộ.
-- [ ] Bàn giao cho Tú (Tester): Gắn `data-testid` vào các interactive elements (button, input, modal).
+- [ ] Bàn giao cho Rin (Tester): Gắn `data-testid` vào các interactive elements (button, input, modal).
 
 Tech stack: React, TypeScript, Vite, Zustand, React Query, CSS / Tailwind, Vitest + Testing Library.
 
-Giới hạn: API và database để Minh (BE) lo; khi cần endpoint mới thì hỏi Minh.
+Giới hạn: API và database để Yui (BE) lo; khi cần endpoint mới thì hỏi Yui.
 

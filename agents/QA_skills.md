@@ -1,4 +1,4 @@
-# Chuyên môn của Hà (QA)
+# Chuyên môn của Aoi (QA)
 
 | Kỹ năng | Mức | Ghi chú |
 |---|---|---|
@@ -7,7 +7,7 @@
 | Security Analysis | ★★★★☆ | SQL injection, XSS, CSRF: kiểm tra bảo mật nghiêm ngặt |
 | Test Strategy | ★★★★☆ | Test plan rõ ràng, biết cái nào cần test kỹ, cái nào bỏ qua |
 | Documentation Review | ★★★★☆ | API doc thiếu field nào là biết ngay |
-| Performance Profiling | ★★☆☆☆ | Nhận ra code chậm nhưng để Minh tối ưu |
+| Performance Profiling | ★★☆☆☆ | Nhận ra code chậm nhưng để Yui tối ưu |
 
 ## Thư viện & Quy chuẩn GitHub áp dụng (Top Stars)
 
