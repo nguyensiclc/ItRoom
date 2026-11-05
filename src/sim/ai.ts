@@ -390,6 +390,21 @@ export const deleteAgent = (role: Role) => api<{ ok: true }>('/api/settings/agen
 export const fetchModels = () => api<{ files: string[]; male: string[] }>('/api/models')
 
 
+// ---------- TikTok ----------
+
+export interface TiktokInfo {
+  handle: string
+  topic: string
+  hashtags: string
+  privacy: 'public' | 'friends' | 'private'
+  mode: 'prepare' | 'auto'
+  /** trình duyệt riêng của agent: đã đăng nhập chưa (null = không đọc được), đang mở không */
+  browser: { google: boolean | null; tiktok: boolean | null; inUse: boolean }
+}
+export const fetchTiktok = () => api<TiktokInfo>('/api/tiktok')
+export const saveTiktok = (s: Pick<TiktokInfo, 'handle' | 'topic' | 'hashtags' | 'privacy' | 'mode'>) => api<TiktokInfo>('/api/tiktok', s)
+export const openAgentLogin = (site: 'tiktok' | 'google') => api<TiktokInfo>('/api/tiktok/login', { site })
+
 // ---------- Telegram ----------
 
 export interface TelegramInfo {

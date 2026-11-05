@@ -4,6 +4,7 @@ import { useStore } from '../store'
 import { AgyLogin } from './AgyLogin'
 import { GithubSettings } from './GithubSettings'
 import { TelegramSettings } from './TelegramSettings'
+import { TiktokSettings } from './TiktokSettings'
 import { createAgent, deleteAgent, fetchAgentSettings, fetchModels, saveAgentSettings, type AgentSettings } from '../sim/ai'
 import { refreshRoster } from '../sim/roster'
 
@@ -14,6 +15,7 @@ const SECTIONS = [
   { id: 'models', label: '🤖 Model', ready: false },
   { id: 'project', label: '📁 Dự án & GitHub', ready: true },
   { id: 'telegram', label: '✈️ Telegram', ready: true },
+  { id: 'tiktok', label: '🎵 TikTok', ready: true },
   { id: 'room', label: '🏢 Phòng', ready: false },
 ] as const
 
@@ -259,6 +261,7 @@ export function Settings() {
         {section === 'login' && <AgyLogin />}
         {section === 'project' && <GithubSettings />}
         {section === 'telegram' && <TelegramSettings />}
+        {section === 'tiktok' && <TiktokSettings />}
         {section === 'agents' && (
           <>
             <div className="s-tabs">

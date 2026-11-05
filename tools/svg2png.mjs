@@ -18,6 +18,11 @@ const CHROME = [
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/usr/bin/google-chrome',
   '/usr/bin/chromium',
+  // Windows
+  `${process.env.ProgramFiles}\\Google\\Chrome\\Application\\chrome.exe`,
+  `${process.env['ProgramFiles(x86)']}\\Google\\Chrome\\Application\\chrome.exe`,
+  `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+  `${process.env['ProgramFiles(x86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
 ].find((p) => p && fs.existsSync(p))
 if (!CHROME) {
   console.error('Không tìm thấy Chrome để xuất ảnh')

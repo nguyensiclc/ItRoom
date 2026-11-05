@@ -8,10 +8,11 @@
 // - Hộp thư của bạn: office/inbox.md (dòng bắt đầu bằng @Role, giao @..., reset @...)
 // Chạy: npm run server
 import http from 'node:http'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 const PORT = Number(process.env.PORT ?? 8787)
 const ROOT = path.resolve(import.meta.dirname, '..')
@@ -37,6 +38,19 @@ const MAX_PARALLEL = 3
 // Mặc định dùng phiên đăng nhập Claude Code: bỏ API key trong env vì nó được ưu tiên hơn login.
 // Đặt USE_API_KEY=1 nếu muốn CLI dùng ANTHROPIC_API_KEY.
 const childEnv = { ...process.env }
+if (process.platform === 'win32') {
+  // công cụ cài sau khi mở app (ffmpeg qua winget, Python...) chưa có trong PATH của tiến trình này: đọc lại PATH người dùng
+  // từ registry; đẩy WindowsApps xuống cuối vì ở đó `python` chỉ là lối tắt mở Microsoft Store
+  const key = Object.keys(childEnv).find((k) => k.toLowerCase() === 'path') ?? 'Path'
+  let user = ''
+  try {
+    user = execFileSync('reg', ['query', 'HKCU\\Environment', '/v', 'Path'], { encoding: 'utf8', windowsHide: true }).match(/REG_(?:EXPAND_)?SZ\s+(.*)/)?.[1] ?? ''
+  } catch {}
+  const expand = (p: string) => p.replace(/%([^%]+)%/g, (_, v: string) => process.env[v] ?? '')
+  const dirs = [...user.split(';').map(expand), ...(childEnv[key] ?? '').split(';')].filter(Boolean)
+  const uniq = [...new Set(dirs)]
+  childEnv[key] = [...uniq.filter((d) => !/WindowsApps/i.test(d)), ...uniq.filter((d) => /WindowsApps/i.test(d))].join(';')
+}
 if (process.env.USE_API_KEY !== '1') {
   delete childEnv.ANTHROPIC_API_KEY
   delete childEnv.ANTHROPIC_AUTH_TOKEN
@@ -1078,18 +1092,54 @@ function withProject<T>(fn: () => Promise<T>): Promise<T> {
   return next
 }
 
-/** Phòng media: đọc giọng (say), đổi định dạng audio (afconvert), ảnh (SVG → PNG bằng tools/svg2png.mjs, sips), video (ffmpeg) */
-const MEDIA_TOOLS = ['say', 'afconvert', 'afinfo', 'sips', 'ffmpeg', 'ffprobe', 'python3', 'python', 'node', 'ls', 'mkdir', 'cp', 'mv'].map((c) => `Bash(${c}:*)`)
+/**
+ * Phòng media: giọng đọc (macOS: say + afconvert; Windows: edge-tts / gTTS qua Python), ảnh (SVG → PNG bằng tools/svg2png.mjs),
+ * video (ffmpeg, video TikTok từ ảnh bằng tools/tiktok.mjs)
+ */
+const IS_MAC = process.platform === 'darwin'
+const MEDIA_TOOLS = [...(IS_MAC ? ['say', 'afconvert', 'afinfo', 'sips'] : []), 'ffmpeg', 'ffprobe', 'python3', 'python', 'node', 'ls', 'mkdir', 'cp', 'mv'].map((c) => `Bash(${c}:*)`)
 const RUN_TOOLS = ['npm', 'npx', 'node', 'pnpm', 'yarn', 'python', 'py', 'pip', 'pytest', 'tsc', 'ls', 'cat', 'mkdir'].map((c) => `Bash(${c}:*)`)
 const GIT_READ = ['git status', 'git diff', 'git log', 'git show'].map((c) => `Bash(${c}:*)`)
 const READ_TOOLS = ['Read', 'Glob', 'Grep', ...GIT_READ]
 const WRITE_TOOLS = ['Edit', 'MultiEdit', 'Write']
+
+/**
+ * Trình duyệt cho phòng media (Playwright MCP, Chrome thật với profile riêng đã đăng nhập Google sẵn): tạo ảnh trên Google Flow.
+ * Chỉ một vai trò được dùng vì một profile không mở được hai Chrome cùng lúc.
+ */
+const BROWSER_FUNC: Func = 'Design'
+const BROWSER_PROFILE = path.join(ROOT, 'office', 'browser-profile')
+const BROWSER_DOWNLOADS = path.join(ROOT, 'office', 'browser-downloads')
+const BROWSER_MCP = JSON.stringify({
+  mcpServers: {
+    browser: {
+      command: process.execPath,
+      args: [
+        path.join(ROOT, 'node_modules', '@playwright', 'mcp', 'cli.js'),
+        '--browser', 'chrome',
+        '--user-data-dir', BROWSER_PROFILE,
+        '--output-dir', BROWSER_DOWNLOADS,
+        '--viewport-size', '1366,900',
+      ],
+    },
+  },
+})
+const FLOW_RULES = `
+# Tạo ảnh bằng Google Flow (công cụ mcp__browser__*)
+
+Bạn có trình duyệt Chrome riêng, đã đăng nhập Google sẵn. Dùng nó để tạo ảnh AI trên Google Flow khi việc cần ảnh minh hoạ / ảnh cho video:
+- Chỉ mở https://flow.google.com (và trang đăng nhập Google nếu nó tự chuyển tới). Không vào trang khác, không đăng xuất, không đổi cài đặt tài khoản, không mua credit, không chia sẻ / đăng công khai gì.
+- Mỗi việc tạo tối đa 8 ảnh (mỗi lần tạo tốn credit của sếp). Prompt tiếng Anh, ghi rõ khổ dọc 9:16 nếu ảnh cho TikTok, giữ cùng một phong cách cho cả bộ ảnh.
+- Xem trang bằng browser_snapshot rồi mới bấm; chờ ảnh tạo xong (browser_wait_for) rồi tải về. File tải về nằm trong ${BROWSER_DOWNLOADS}: chép sang \`media/images/\` của dự án bằng cp, đặt tên theo cảnh (vd \`scene-01.png\`), rồi Read lại ảnh để kiểm tra.
+- Gặp trang đăng nhập Google, CAPTCHA, hết credit hay lỗi lạ: dừng lại, không tự nhập mật khẩu, báo rõ trong details để sếp xử lý.
+- Xong việc thì đóng trình duyệt (browser_close).`
 
 /** Công cụ theo vai trò: dev và tester sửa file + chạy lệnh, QA chỉ đọc, PM đọc và viết tài liệu */
 function toolsFor(role: Role) {
   const f = funcOf(role)
   if (f === 'BE' || f === 'FE' || f === 'Tester') return [...READ_TOOLS, ...WRITE_TOOLS, ...RUN_TOOLS]
   if (f === 'PM') return [...READ_TOOLS, ...WRITE_TOOLS]
+  if (f === BROWSER_FUNC) return [...READ_TOOLS, ...WRITE_TOOLS, ...MEDIA_TOOLS, 'mcp__browser']
   if (MEDIA_FUNCS.includes(f)) return [...READ_TOOLS, ...WRITE_TOOLS, ...MEDIA_TOOLS]
   return READ_TOOLS
 }
@@ -1125,15 +1175,23 @@ Bạn đang làm việc thật trong thư mục dự án (thư mục hiện tạ
 
 /** Luật riêng cho agent phòng media (vai trò Media) */
 const SVG2PNG = path.join(ROOT, 'tools', 'svg2png.mjs')
+const TIKTOK = path.join(ROOT, 'tools', 'tiktok.mjs')
 const MEDIA_RULES = `
 # Phòng media: làm audio, ảnh, video
 
-Bạn làm ở phòng media. Sản phẩm để trong thư mục \`media/\` của dự án: \`media/audio/\`, \`media/images/\`, \`media/video/\` (tạo thư mục nếu chưa có). Đặt tên file ngắn, không dấu, gạch nối (vd \`gioi-thieu-app.m4a\`).
-Lệnh shell chỉ được dùng: say, afconvert, afinfo, sips, ffmpeg, ffprobe, python3, node, ls, mkdir, cp, mv (không có thư viện ảnh Python như PIL).
-- Audio / lồng tiếng: \`say -v Linh -o /tmp/x.aiff "nội dung tiếng Việt"\` (giọng Linh tiếng Việt; tiếng Anh dùng -v Samantha; file .aiff tạm để ở /tmp), rồi \`afconvert -f m4af -d aac /tmp/x.aiff media/audio/x.m4a\`. Nhạc nền / hiệu ứng đơn giản: tạo bằng ffmpeg (vd \`ffmpeg -f lavfi -i "sine=frequency=440:duration=2"\`).
-- Ảnh: vẽ bằng SVG (viết file .svg: banner, logo, minh hoạ, poster; chữ tiếng Việt dùng font-family="Helvetica, Arial"), rồi xuất PNG đúng cỡ bằng \`node ${SVG2PNG} media/images/x.svg media/images/x.png 1280 720\` (rộng cao tuỳ ý; công cụ này cũng nhận file .html để dựng ảnh phức tạp bằng HTML/CSS). Mở xem lại ảnh PNG (Read) để tự kiểm tra bố cục trước khi báo xong. Chỉnh cỡ / đổi định dạng ảnh: sips.
-- Video: dựng bằng ffmpeg từ ảnh PNG + audio (vd slideshow: \`ffmpeg -y -loop 1 -t 4 -i a.png -loop 1 -t 4 -i b.png -i voice.m4a -filter_complex "[0:v][1:v]concat=n=2:v=1,format=yuv420p[v]" -map "[v]" -map 2:a -shortest media/video/x.mp4\`). Xuất mp4 (H.264 + AAC) để xem được trên trình duyệt và điện thoại. Nếu máy chưa có ffmpeg thì báo trong details và vẫn làm phần ảnh / audio.
-- Mỗi lần xong, kiểm tra file thật sự tạo ra (ls, ffprobe, afinfo) và liệt kê đường dẫn file trong details.`
+Bạn làm ở phòng media. Sản phẩm để trong thư mục \`media/\` của dự án: \`media/audio/\`, \`media/images/\`, \`media/video/\`, video TikTok trong \`media/tiktok/<ten-video>/\` (tạo thư mục nếu chưa có). Đặt tên file ngắn, không dấu, gạch nối (vd \`gioi-thieu-app.mp3\`).
+Lệnh shell chỉ được dùng: ${IS_MAC ? 'say, afconvert, afinfo, sips, ' : ''}ffmpeg, ffprobe, python, node, ls, mkdir, cp, mv (không có thư viện ảnh Python như PIL).
+${
+  IS_MAC
+    ? `- Audio / lồng tiếng: \`say -v Linh -o /tmp/x.aiff "nội dung tiếng Việt"\` (giọng Linh tiếng Việt; tiếng Anh dùng -v Samantha), rồi \`afconvert -f m4af -d aac /tmp/x.aiff media/audio/x.m4a\`.`
+    : `- Audio / lồng tiếng: viết lời đọc vào file .txt (UTF-8) rồi \`python -m edge_tts --voice vi-VN-HoaiMyNeural -f media/audio/x.txt --write-media media/audio/x.mp3\` (không truyền tiếng Việt qua --text: bị hỏng dấu). edge-tts hay từ chối vài câu tiếng Việt (NoAudioReceived): thử lại, vẫn lỗi thì dùng giọng Google: \`python -c "import sys;from gtts import gTTS;gTTS(open(sys.argv[1],encoding='utf-8').read(),lang='vi').save(sys.argv[2])" media/audio/x.txt media/audio/x.mp3\`.`
+} Nhạc nền / hiệu ứng đơn giản: tạo bằng ffmpeg (vd \`ffmpeg -f lavfi -i "sine=frequency=440:duration=2"\`).
+- Ảnh: vẽ bằng SVG (viết file .svg: banner, logo, minh hoạ, poster; chữ tiếng Việt dùng font-family="Helvetica, Arial"), rồi xuất PNG đúng cỡ bằng \`node ${SVG2PNG} media/images/x.svg media/images/x.png 1280 720\` (rộng cao tuỳ ý; công cụ này cũng nhận file .html để dựng ảnh phức tạp bằng HTML/CSS). Mở xem lại ảnh PNG (Read) để tự kiểm tra bố cục trước khi báo xong. Chỉnh cỡ / đổi định dạng ảnh: ffmpeg.
+- Video thường: dựng bằng ffmpeg từ ảnh + audio, xuất mp4 (H.264 + AAC) để xem được trên trình duyệt và điện thoại.
+- Video TikTok (dọc 1080x1920, ghép từ ảnh): đặt ảnh từng cảnh (scene-01.jpg...) và \`kich-ban.json\` vào \`media/tiktok/<ten-video>/\`, rồi chạy \`node ${TIKTOK} media/tiktok/<ten-video>\`. Công cụ tự lồng tiếng bằng VieNeu-TTS (giọng tiếng Việt chạy trên máy, mặc định Trúc Ly; đổi bằng trường "voice": Trúc Ly, Ngọc Huyền, Mai Anh, Đoan Trang, Quỳnh Anh, Ngọc Linh (nữ Bắc), Ngọc Trân (nữ Trung), Thùy Dung, Mỹ Duyên, Thục Đoan, Kim Thanh (nữ Nam)), zoom chậm từng ảnh, chèn phụ đề trong vùng an toàn, xuất \`video.mp4\` và \`caption.txt\`. Mẫu kich-ban.json:
+  \`{"scenes":[{"image":"scene-01.jpg","say":"lời đọc cảnh 1","text":"chữ trên hình (ngắn, tuỳ chọn)"}],"caption":"caption đăng TikTok + #hashtag","music":"nhac.mp3 (tuỳ chọn)"}\`
+  Mỗi video 15–45 giây, 4–8 cảnh, câu đầu phải móc người xem trong 3 giây; lời đọc ngắn, văn nói; chữ trên hình tối đa ~8 từ. Không gắn nhạc có bản quyền (sếp chọn nhạc TikTok khi đăng).
+- Mỗi lần xong, kiểm tra file thật sự tạo ra (ls, ffprobe; với video TikTok trích 1-2 khung hình bằng ffmpeg rồi Read xem phụ đề) và liệt kê đường dẫn file trong details.`
 
 function runClaudeWork(role: Role, cwd: string, system: string, prompt: string, sessionId: string, resume: boolean, model?: string): Promise<WorkResult> {
   const args = [
@@ -1144,6 +1202,7 @@ function runClaudeWork(role: Role, cwd: string, system: string, prompt: string, 
     '--allowedTools', ...toolsFor(role),
     resume ? '--resume' : '--session-id', sessionId,
   ]
+  if (funcOf(role) === BROWSER_FUNC) args.push('--mcp-config', BROWSER_MCP, '--strict-mcp-config')
   if (model) args.push('--model', model)
   return new Promise((resolve, reject) => {
     const child = spawn(CLAUDE_BIN, args, { cwd, windowsHide: true, env: childEnv })
@@ -1214,6 +1273,30 @@ function workPrompt(w: WorkRequest, base: string, diff: string) {
   // ---- dây chuyền phòng media: mọi file của việc này nằm trong một thư mục riêng ----
   const dir = `media/${slugify(w.title) || 'du-an'}`
   const brief = `${dir}/kich-ban.md`
+  // video TikTok: dọc 9:16, ảnh tạo trên Google Flow, lồng tiếng + dựng bằng tools/tiktok.mjs (không thu âm riêng)
+  if (/tiktok/i.test(`${w.title} ${w.request}`)) {
+    const json = `${dir}/kich-ban.json`
+    switch (w.step) {
+      case 'script':
+        return `${head}\nBạn là trưởng nhóm media, đây là video TikTok dọc (ghép ảnh + giọng đọc). KHÔNG tự làm ảnh / video. Viết 2 file:
+1) \`${brief}\`: ý tưởng, người xem, câu móc 3 giây đầu, phong cách hình ảnh chung (một phong cách cho cả bộ ảnh), bảng cảnh.
+2) \`${json}\` đúng mẫu: {"scenes":[{"image":"scene-01.jpg","say":"lời đọc","text":"chữ trên hình","prompt":"prompt tiếng Anh tạo ảnh"}],"caption":"..."}
+- 5–7 cảnh, tổng 25–45 giây (mỗi cảnh 1–2 câu đọc, văn nói tự nhiên). Cảnh 1 là câu móc gây tò mò, cảnh cuối kêu gọi follow / bình luận.
+- "text": tối đa ~8 từ, không emoji. "say": tiếng Việt, không viết tắt, số viết bằng chữ nếu khó đọc, từ mượn viết theo cách đọc (vd "ô-xi" thay vì "oxy").
+- "prompt": tiếng Anh, mô tả cụ thể cảnh để Google Flow vẽ, cùng một câu phong cách ở cuối mọi prompt, ghi "vertical 9:16", không yêu cầu chữ trong ảnh.
+- "caption": 1–2 câu + 3–5 hashtag (gồm cả hashtag cố định của kênh nếu có).
+- Nội dung kiến thức phải ĐÚNG và kiểm chứng được (chọn sự thật phổ biến, đã được xác nhận; không bịa số liệu); nếu có chỗ không chắc thì bỏ.${tiktokBrief()}
+${w.notes ? `Ghi chú: ${w.notes}` : ''} verdict = "done"; summary kể ngắn chủ đề và câu móc.`
+      case 'design':
+        return `${head}\nBạn là thiết kế của phòng media. Đọc \`${json}\`: với từng cảnh, tạo ảnh trên Google Flow theo đúng "prompt" (khổ 9:16), tải về và lưu thành \`${dir}/<image>\` (đúng tên trong trường "image", vd scene-01.jpg; nếu file tải về là .png thì đổi "image" trong json cho khớp). Giữ cùng phong cách cho cả bộ. Mở xem lại từng ảnh. ${w.notes ? `Ghi chú của trưởng nhóm: ${w.notes}` : ''} verdict = "done" khi đủ ảnh; details liệt kê file.`
+      case 'audio':
+        return `${head}\nVideo TikTok này được lồng tiếng tự động khi dựng (tools/tiktok.mjs). Bạn chỉ đọc \`${json}\` và sửa trường "say" cho dễ đọc thành tiếng (câu ngắn, không ký hiệu, số viết bằng chữ). verdict = "done".`
+      case 'edit':
+        return `${head}\nBạn là người dựng video. Kiểm tra \`${json}\` và đủ ảnh trong ${dir}/, rồi chạy \`node ${TIKTOK} ${dir}\` (tự lồng tiếng, zoom, phụ đề, xuất ${dir}/video.mp4 và caption.txt). Xuất 2 khung hình bằng ffmpeg rồi Read để xem phụ đề không lỗi dấu, không che mặt nhân vật. ${w.notes ? `Thông tin từ đồng đội: ${w.notes}` : ''} verdict = "done"; details ghi đường dẫn video và thời lượng.`
+      case 'mreview':
+        return `${head}\nBạn là trưởng nhóm media, duyệt video TikTok ${dir}/video.mp4 so với \`${brief}\` và \`${json}\`: ffprobe (dọc 1080x1920, có tiếng, 15–60 giây), xuất vài khung hình rồi Read (ảnh đúng cảnh, phụ đề đúng chính tả và nằm gọn), đọc caption.txt. Không tự sửa. verdict = "pass" nếu đạt; "fail" nếu cần sửa, khi đó area = "design" (ảnh) hoặc "video" (lời đọc / phụ đề / dựng) và details ghi từng điểm cụ thể.`
+    }
+  }
   switch (w.step) {
     case 'script':
       return `${head}\nBạn là trưởng nhóm media. Viết kịch bản / storyboard vào \`${brief}\` (KHÔNG tự làm ảnh, audio, video: việc đó của đồng đội). Gồm: mục tiêu & người xem, thông điệp chính, thời lượng tổng, phong cách (bảng màu mã hex, font, cảm xúc), bảng cảnh (số cảnh, thời lượng giây, hình ảnh mô tả cụ thể để vẽ, chữ hiện trên hình, lời thoại tiếng Việt), nhạc nền (tâm trạng, tốc độ), và giao việc rõ ràng cho: Thiết kế (ảnh từng cảnh: ${dir}/images/canh-1.png..., 1280x720), Âm thanh (lời thoại từng cảnh ${dir}/audio/canh-1.m4a... và ${dir}/audio/nhac-nen.m4a), Dựng video (${dir}/video/<tên>.mp4). Nếu sếp chỉ xin ảnh hoặc audio thì bỏ phần không cần. ${w.notes ? `Ghi chú: ${w.notes}` : ''} verdict = "done"; summary kể ngắn ý tưởng chính.`
@@ -1251,7 +1334,7 @@ function doWork(w: WorkRequest) {
     const t0 = Date.now()
     console.log(`[làm việc] ${w.role} · ${w.step} · ${w.branch}`)
     const model = frontmatter(PROJECT_FILE, 'code_model') ?? modelFor('work', 'claude')
-    const system = `${systemPrompt(w.role)}\n${WORK_RULES}${MEDIA_FUNCS.includes(funcOf(w.role)) ? `\n${MEDIA_RULES}` : ''}`
+    const system = `${systemPrompt(w.role)}\n${WORK_RULES}${MEDIA_FUNCS.includes(funcOf(w.role)) ? `\n${MEDIA_RULES}` : ''}${funcOf(w.role) === BROWSER_FUNC ? `\n${FLOW_RULES}` : ''}`
     const prompt = `${work.turns > 0 ? profileUpdate(system, work.promptHash) : ''}${workPrompt(w, p.base, diff)}`
     let result: WorkResult
     try {
@@ -1313,6 +1396,111 @@ function emit(type: OfficeEvent['type'], role: Role, text = '', group?: string) 
   events.push({ id: nextEventId++, type, role, text, group })
   if (events.length > 200) events.shift()
   if (type === 'reply' || type === 'error') tgSend(`${group ? `👥 ${group}` : '💬 Riêng'} · ${who(role)}${type === 'error' ? ' ⚠️' : ''}:\n${text}`)
+}
+
+// ---------- TikTok: kênh phòng media phụ trách ----------
+const TT_FILE = path.join(ROOT, 'office', 'tiktok.json')
+const TT_PRIVACY = ['public', 'friends', 'private'] as const
+const TT_MODES = ['prepare', 'auto'] as const
+interface TtConfig {
+  /** tên kênh, vd @bancobiet.daily */
+  handle: string
+  /** chủ đề, người xem, giọng điệu: đưa vào kịch bản của trưởng nhóm media */
+  topic: string
+  /** hashtag luôn gắn vào caption */
+  hashtags: string
+  privacy: (typeof TT_PRIVACY)[number]
+  /** prepare: tải video lên và điền sẵn, sếp tự bấm Đăng; auto: phòng media tự bấm Đăng */
+  mode: (typeof TT_MODES)[number]
+}
+const TT_DEFAULT: TtConfig = { handle: '', topic: '', hashtags: '', privacy: 'public', mode: 'prepare' }
+function loadTt(): TtConfig {
+  try {
+    return { ...TT_DEFAULT, ...(JSON.parse(fs.readFileSync(TT_FILE, 'utf8')) as Partial<TtConfig>) }
+  } catch {
+    return { ...TT_DEFAULT }
+  }
+}
+function saveTt(body: Record<string, unknown>) {
+  const cur = loadTt()
+  const str = (v: unknown, max: number, fallback: string) => (typeof v === 'string' ? v.replace(/\r/g, '').trim().slice(0, max) : fallback)
+  let handle = str(body.handle, 40, cur.handle).replace(/\s+/g, '')
+  if (handle && !handle.startsWith('@')) handle = `@${handle}`
+  if (handle && !/^@[\w.]{2,30}$/.test(handle)) return { error: 'Tên kênh TikTok chỉ gồm chữ không dấu, số, dấu chấm, gạch dưới (vd @bancobiet.daily)' }
+  const hashtags = str(body.hashtags, 200, cur.hashtags)
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map((h) => (h.startsWith('#') ? h : `#${h}`))
+    .join(' ')
+  const next: TtConfig = {
+    handle,
+    topic: str(body.topic, 2000, cur.topic),
+    hashtags,
+    privacy: TT_PRIVACY.find((p) => p === body.privacy) ?? cur.privacy,
+    mode: TT_MODES.find((m) => m === body.mode) ?? cur.mode,
+  }
+  fs.writeFileSync(TT_FILE, JSON.stringify(next, null, 2))
+  appendLog('Sếp', `cập nhật cài đặt kênh TikTok${handle ? ` ${handle}` : ''}`)
+  return tiktokView()
+}
+/** Trình duyệt của agent (profile riêng) đã đăng nhập Google / TikTok chưa: đọc tên cookie (không đọc giá trị) */
+function browserLogins() {
+  const db = path.join(BROWSER_PROFILE, 'Default', 'Network', 'Cookies')
+  if (!fs.existsSync(db)) return { google: false, tiktok: false }
+  const tmp = path.join(BROWSER_DOWNLOADS, '.cookies-check.db')
+  try {
+    fs.mkdirSync(BROWSER_DOWNLOADS, { recursive: true })
+    fs.copyFileSync(db, tmp) // Chrome đang mở thì file bị khoá: đọc bản sao
+    const conn = new DatabaseSync(tmp, { readOnly: true })
+    const has = (host: string, name: string) => !!conn.prepare('select 1 from cookies where host_key like ? and name = ? limit 1').get(`%${host}`, name)
+    const r = { google: has('google.com', 'SID'), tiktok: has('tiktok.com', 'sessionid') }
+    conn.close()
+    return r
+  } catch {
+    return { google: null, tiktok: null }
+  } finally {
+    fs.rmSync(tmp, { force: true })
+  }
+}
+/** Chrome đang mở profile của agent (Yuki đang làm việc, hoặc cửa sổ đăng nhập chưa đóng) */
+function browserInUse() {
+  const lock = path.join(BROWSER_PROFILE, 'lockfile')
+  if (!fs.existsSync(lock)) return false
+  try {
+    fs.closeSync(fs.openSync(lock, 'r+'))
+    return false
+  } catch {
+    return true
+  }
+}
+function tiktokView() {
+  return { ...loadTt(), browser: { ...browserLogins(), inUse: browserInUse() } }
+}
+const CHROME_EXE = [
+  process.env.CHROME_BIN,
+  `${process.env.ProgramFiles}\\Google\\Chrome\\Application\\chrome.exe`,
+  `${process.env['ProgramFiles(x86)']}\\Google\\Chrome\\Application\\chrome.exe`,
+  `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+].find((p) => p && fs.existsSync(p))
+/** Mở Chrome thường (không tự động hoá, để Google / TikTok không chặn đăng nhập) với profile của agent */
+function openAgentBrowser(url: string) {
+  if (!CHROME_EXE) return { error: 'Không tìm thấy Chrome trên máy' }
+  if (browserInUse()) return { error: 'Trình duyệt của agent đang mở (có thể Yuki đang làm việc). Đóng cửa sổ đó hoặc chờ xong rồi thử lại.' }
+  const child = spawn(CHROME_EXE, [`--user-data-dir=${BROWSER_PROFILE}`, '--no-first-run', url], { detached: true, stdio: 'ignore', windowsHide: false })
+  child.unref()
+  return tiktokView()
+}
+/** Hồ sơ kênh đưa vào kịch bản TikTok của trưởng nhóm media */
+function tiktokBrief() {
+  const t = loadTt()
+  const lines = [
+    t.handle && `Kênh: ${t.handle}`,
+    t.topic && `Chủ đề / người xem / giọng điệu của kênh: ${t.topic}`,
+    t.hashtags && `Hashtag luôn có trong caption: ${t.hashtags}`,
+  ].filter(Boolean)
+  return lines.length ? `\nHồ sơ kênh TikTok (sếp đặt trong Cài đặt):\n${lines.join('\n')}` : ''
 }
 
 // ---------- Telegram: sếp chat với team qua bot ----------
@@ -2254,6 +2442,18 @@ const server = http.createServer(async (req, res) => {
     const role = toRole(url.searchParams.get('role') ?? '')
     if (!role) return send(res, 400, { error: 'role không hợp lệ' })
     return send(res, 200, agentDetail(role))
+  }
+
+  // ---- TikTok ----
+  if (req.method === 'GET' && url.pathname === '/api/tiktok') return send(res, 200, tiktokView())
+  if (req.method === 'POST' && url.pathname === '/api/tiktok') {
+    const r = saveTt((await readJson(req, 20_000)) ?? {})
+    return send(res, 'error' in r ? 400 : 200, r)
+  }
+  if (req.method === 'POST' && url.pathname === '/api/tiktok/login') {
+    const body = await readJson(req)
+    const r = openAgentBrowser(body?.site === 'google' ? 'https://flow.google.com/' : 'https://www.tiktok.com/login')
+    return send(res, 'error' in r ? 409 : 200, r)
   }
 
   // ---- Telegram ----

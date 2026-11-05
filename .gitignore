@@ -11,7 +11,14 @@ office/groups.json
 projects/
 
 office/telegram.json
+office/tiktok.json
+office/tiktok-thu/
 *.tsbuildinfo
 
 # mô hình VRoid Hub: nhiều mẫu cấm phân phối lại, chỉ để trên máy (nguồn: public/models/CREDITS.md)
 public/models/*.vrm
+
+# trình duyệt riêng của agent phòng media (cookie đăng nhập Google, file tải về)
+office/browser-profile/
+office/browser-downloads/
+.venv-vieneu/
